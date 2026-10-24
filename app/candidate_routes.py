@@ -134,16 +134,25 @@ async def candidates_search(request: Request, vtype: str = "movie", id: str = ""
     meta, cands, errors, keyword = await candidate_service.search(
         vtype, id, keyword=kw, disks=disk_list, cookie=user_cookie)
     # "网盘中已有 N 项"实时补算：不依赖搜索缓存内容（detail 可能来自 1 天前
-    # 的缓存），缓存命中与否两条路径都覆盖，结果卡片直接显示无需点开弹窗
+    # 的缓存），缓存命中与否两条路径都覆盖。计数进 existing_count（卡片 badge
+    # 直显），逐文件 exists 标志供"查看内容"弹窗直接渲染绿勾——有效候选的
+    # detail 已含完整文件列表，点开弹窗无需再解析分享
     existing = await _drive_existing_names(user_cookie, user["id"])
-    if existing:
-        for c in cands:
-            d = getattr(c, "detail", None)
-            if d and d.get("files"):
-                d["existing_count"] = sum(
-                    1 for f in d["files"]
-                    if (f.get("name") or "") in existing
-                    or os.path.basename(f.get("name") or "") in existing)
+    for c in cands:
+        d = getattr(c, "detail", None)
+        if not (d and d.get("files")):
+            continue
+        for f in d["files"]:
+            nm = f.get("name") or ""
+            if existing:
+                f["exists"] = nm in existing \
+                    or os.path.basename(nm) in existing
+            # 缓存中的旧 detail 无 warn：补算命名规范提示（与任务页同一规则；
+            # 搜索场景无季集目标，仅查无标题）
+            f.setdefault("warn", _name_warn(nm, None, None))
+        if existing:
+            d["existing_count"] = sum(
+                1 for f in d["files"] if f.get("exists"))
     if id and meta is None:  # 锚定模式影片元数据失败（独立搜索 meta 恒为 null）
         return JSONResponse({"detail": errors or "影片元数据获取失败"}, status_code=404)
     return {
@@ -386,6 +395,11 @@ def _task_files(task: dict) -> list[dict]:
         raw = list(result["files"])
     elif result.get("names"):  # 老任务仅有路径列表（无 size）
         raw = [{"name": n, "size": 0} for n in result["names"]]
+    if result.get("mode") == "picks" and result.get("names"):
+        # 历史任务兜底：老版 worker 落盘清单用网盘模糊搜索补全，混入同目录
+        # 其他任务的文件；picks 按本次实际所选文件名过滤（显示层修复）
+        want = {os.path.basename(n) for n in result["names"]}
+        raw = [f for f in raw if os.path.basename(f["name"]) in want]
     for f in raw:
         f["size_h"] = _human_size(f.get("size") or 0)
         f["spec"] = _spec_badges(f["name"])

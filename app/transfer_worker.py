@@ -19,6 +19,7 @@
 import asyncio
 import json
 import logging
+import os
 import re
 import time
 
@@ -345,8 +346,23 @@ class TransferWorker:
             if not result.get("files"):  # 记录落盘文件清单（供 Stream 按季集定位）
                 if not found:
                     found = await self._search_safe(provider, task["title"])
-                result["files"] = [{"name": f.name, "fid": f.fid, "size": f.size}
-                                   for f in found[:50]]
+                if mode == "picks":
+                    # picks：网盘搜索是模糊匹配，会误配目录里其他任务的同目录
+                    # 文件；只保留本次实际所选的文件名（搜索全失配时退回任务
+                    # 记录的 names，明细缺 fid/size 但准确）
+                    want = {os.path.basename(n)
+                            for n in (result.get("names") or [])}
+                    found = [f for f in found
+                             if os.path.basename(f.name) in want]
+                    result["files"] = [
+                        {"name": f.name, "fid": f.fid, "size": f.size}
+                        for f in found[:50]] or [
+                        {"name": os.path.basename(n), "fid": "", "size": 0}
+                        for n in (result.get("names") or [])][:50]
+                else:  # bulk：整包落盘，目录内容即任务产物
+                    result["files"] = [{"name": f.name, "fid": f.fid,
+                                        "size": f.size}
+                                       for f in found[:50]]
 
         db.set_task_fields(self.db_path, task["id"],
                            target_fid=fid,
