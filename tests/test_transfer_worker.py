@@ -237,6 +237,34 @@ async def test_ambiguous_episode_bulks_whole_share(env):
     assert result["mode"] == "bulk"
 
 
+async def test_whole_mode_transfers_all_and_records_files(env):
+    """whole 模式（转存完整剧集）：跳过选片整包转存，落盘清单写入 result_json.files。"""
+    fake, path = env
+    fake.entries = {
+        "0": [
+            {"fid": "s1", "file_name": "余罪.S01E01.2016.1080p.WEB-DL.mp4",
+             "dir": False, "size": 800, "share_fid_token": "t-s1"},
+            {"fid": "s2", "file_name": "余罪.S01E02.2016.1080p.WEB-DL.mp4",
+             "dir": False, "size": 810, "share_fid_token": "t-s2"},
+        ],
+    }
+    fake._by_fid = {e["fid"]: e for lst in fake.entries.values() for e in lst}
+    t, _ = db.create_task(path, vtype="series", imdb_id="tt5925192", season=None,
+                          episode=None, title="余罪", candidate_title="余罪 全集",
+                          share_url=SHARE_URL, mode="whole")
+    await run_tick(path)
+    t = db.get_task(path, t["id"])
+    assert t["status"] == "COMPLETED"
+    assert t["target_fid"] == ""                       # 整包不锚定单文件
+    assert fake.save_calls[0]["fid_list"] == ["s1", "s2"]  # 分享顶层全部条目
+    result = json.loads(t["result_json"])
+    assert result["mode"] == "bulk"
+    assert {f["name"]: f["fid"] for f in result["files"]} == {
+        "余罪.S01E01.2016.1080p.WEB-DL.mp4": "new-s1",
+        "余罪.S01E02.2016.1080p.WEB-DL.mp4": "new-s2",
+    }
+
+
 async def test_poll_failure_status_fails_task(env):
     fake, path = env
     fake.poll_status = 3
@@ -380,3 +408,4 @@ def test_migration_adds_phase4_columns(tmp_path):
     db.init(path, SECRET)
     t = db.get_task(path, "old1")
     assert t["target_fid"] == "" and t["attempts"] == 0  # 旧数据仍在且新列有默认值
+    assert t["mode"] == "episode"  # 阶段 5 mode 列同样自动补齐默认值

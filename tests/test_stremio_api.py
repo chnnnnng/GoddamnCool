@@ -1,4 +1,5 @@
 """Stremio 协议端点测试：manifest / stream 全链路（mock 网盘与 TMDB）。"""
+import json
 import os
 
 # 必须在导入 app 之前设置（startup 校验）
@@ -122,6 +123,74 @@ async def test_stream_guidance_shows_task_progress(monkeypatch):
     s = streams[0]
     assert s["externalUrl"].endswith(f"/task/{task['id']}")
     assert "转存" in s["description"]
+
+
+# ---------- 整包任务播放闭环（阶段 5） ----------
+
+def _create_whole_task(svc, files: list[dict]):
+    from app import db as db_mod
+    task, _ = db_mod.create_task(svc.db_path, vtype="series", imdb_id="tt5925192",
+                                 season=None, episode=None, title="余罪",
+                                 candidate_title="余罪 整包",
+                                 share_url="https://pan.quark.cn/s/abc123def",
+                                 mode="whole")
+    db_mod.update_task_status(svc.db_path, task["id"], "COMPLETED")
+    db_mod.set_task_fields(svc.db_path, task["id"],
+                           result_json=json.dumps({"mode": "bulk", "files": files},
+                                                  ensure_ascii=False))
+    return task
+
+
+async def test_stream_whole_task_locates_bare_episode_file(monkeypatch):
+    """整包任务落盘清单按集数短路：裸集数文件名 06.mkv 标题匹配必失败，
+    必须靠 result_json.files 解析出的集数定位（阶段 5 闭环）。"""
+    e5 = CloudFile(fid="fid-e5", name="05.mkv", size=800, is_dir=False)
+    e6 = CloudFile(fid="fid-e6", name="06.mkv", size=800, is_dir=False)
+    provider = FakeProvider([e5, e6])
+    svc = patch_service(monkeypatch, provider,
+                        {"imdb_id": "tt5925192", "name": "余罪",
+                         "type": "series", "releaseInfo": "2016"})
+    task = _create_whole_task(svc, [
+        {"name": "05.mkv", "fid": "fid-e5", "size": 800},
+        {"name": "06.mkv", "fid": "fid-e6", "size": 800},
+    ])
+
+    streams, _ = await svc.get_streams("series", "tt5925192:2:6")
+    assert len(streams) == 1
+    s = streams[0]
+    assert s["description"].startswith("转存任务已定位该文件")
+    assert s["behaviorHints"]["filename"] == "06.mkv"
+    assert provider.requested_play.fid == "fid-e6"
+    assert task["mode"] == "whole"
+
+
+async def test_stream_whole_task_missing_episode_no_shortcircuit(monkeypatch):
+    """整包任务落盘清单中无目标集数 → 不短路，返回任务页引导流。"""
+    provider = FakeProvider([])  # 网盘无匹配文件
+    svc = patch_service(monkeypatch, provider,
+                        {"imdb_id": "tt5925192", "name": "余罪",
+                         "type": "series", "releaseInfo": "2016"})
+    task = _create_whole_task(svc, [{"name": "05.mkv", "fid": "fid-e5", "size": 800}])
+
+    streams, _ = await svc.get_streams("series", "tt5925192:2:6")
+    assert len(streams) == 1
+    assert streams[0]["externalUrl"].endswith(f"/task/{task['id']}")
+
+
+async def test_stream_whole_task_season_guard(monkeypatch):
+    """落盘文件名明确标注了其他季（S02E05）而请求 S1 → 不短路，避免错季播放。"""
+    wrong = CloudFile(fid="fid-x", name="Show.S02E05.2024.1080p.mkv", size=800,
+                      is_dir=False)
+    provider = FakeProvider([wrong])
+    svc = patch_service(monkeypatch, provider,
+                        {"imdb_id": "tt5925192", "name": "余罪",
+                         "type": "series", "releaseInfo": "2016"})
+    task = _create_whole_task(svc, [{"name": "Show.S02E05.2024.1080p.mkv",
+                                     "fid": "fid-x", "size": 800}])
+
+    streams, _ = await svc.get_streams("series", "tt5925192:1:5")
+    assert len(streams) == 1
+    assert streams[0]["externalUrl"].endswith(f"/task/{task['id']}")
 
 
 # ---------- manifest ----------

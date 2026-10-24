@@ -372,6 +372,160 @@ def test_create_task_reactivates_after_terminal(tmp_db, monkeypatch):
     assert created and t2 != t1
 
 
+# ---------- 整包转存 mode（阶段 5：转存完整剧集 / 仅转存所选集） ----------
+
+def test_confirm_whole_creates_unseasoned_task(tmp_db, monkeypatch):
+    patch_fetch_meta(monkeypatch)
+    r = _confirm(mode="whole")
+    assert r.status_code == 200 and r.json()["created"] is True
+    task = db.get_task(tmp_db, r.json()["task_id"])
+    assert task["mode"] == "whole"
+    assert task["season"] is None and task["episode"] is None  # 不锚定季集
+
+
+def test_confirm_whole_idempotent_and_coexists_with_episode(tmp_db, monkeypatch):
+    """whole 幂等键 = 分享 + 影片（不带季集）；与特定集任务可并存。"""
+    patch_fetch_meta(monkeypatch)
+    r1 = _confirm(mode="whole")
+    r2 = _confirm(mode="whole")
+    assert r2.json()["task_id"] == r1.json()["task_id"]
+    assert r2.json()["created"] is False
+    r3 = _confirm()  # episode 模式 S1E12 → 不同幂等键，新任务
+    assert r3.json()["created"] is True and r3.json()["task_id"] != r1.json()["task_id"]
+
+
+def test_confirm_rejects_invalid_mode(tmp_db, monkeypatch):
+    patch_fetch_meta(monkeypatch)
+    r = _confirm(mode="bulk")
+    assert r.status_code == 400 and "mode" in r.json()["detail"]
+
+
+def test_whole_task_covers_all_episodes(tmp_path):
+    """get_tasks_for_video：整包任务对该影片任意季集生效，与特定集任务并存。"""
+    path = str(tmp_path / "t.db")
+    db.init(path, SECRET)
+    db.create_task(path, vtype="series", imdb_id="tt1", season=None, episode=None,
+                   title="T", candidate_title="c", share_url="u1", mode="whole")
+    db.create_task(path, vtype="series", imdb_id="tt1", season=1, episode=1,
+                   title="T", candidate_title="c", share_url="u2")
+    assert len(db.get_tasks_for_video(path, "series", "tt1", 1, 2)) == 1   # 仅整包
+    assert len(db.get_tasks_for_video(path, "series", "tt1", 1, 1)) == 2   # 整包+特定集
+    assert len(db.get_tasks_for_video(path, "series", "tt1", 3, 1)) == 1   # 其他季也覆盖
+
+
+# ---------- 分享内容解析（阶段 5：查看内容详情） ----------
+
+def patch_inspect(monkeypatch, result=None, error=None):
+    svc = CandidateService()
+    calls = []
+
+    async def fake_inspect(share_url, passcode=""):
+        calls.append({"url": share_url, "passcode": passcode})
+        if error:
+            raise RuntimeError(error)
+        return result or {"video_count": 1, "other_count": 0, "total_size": 1000,
+                          "total_size_h": "1000B", "is_series": False,
+                          "seasons": [], "files": []}
+
+    monkeypatch.setattr(svc, "inspect_share", fake_inspect)
+    monkeypatch.setattr(cr, "candidate_service", svc)
+    svc.inspect_calls = calls
+    return svc
+
+
+def test_inspect_requires_token():
+    assert client.post("/api/candidates/inspect",
+                       json={"share_url": GOOD_URL}).status_code == 401
+
+
+def test_inspect_rejects_invalid_url():
+    r = client.post("/api/candidates/inspect", headers=AUTH,
+                    json={"share_url": "https://pan.baidu.com/s/1abcdef"})
+    assert r.status_code == 400 and "分享链接无效" in r.json()["detail"]
+
+
+def test_inspect_ok(monkeypatch):
+    svc = patch_inspect(monkeypatch)
+    r = client.post("/api/candidates/inspect", headers=AUTH,
+                    json={"share_url": GOOD_URL, "passcode": "ax72"})
+    assert r.status_code == 200
+    assert r.json()["is_series"] is False
+    assert svc.inspect_calls == [{"url": GOOD_URL, "passcode": "ax72"}]
+
+
+def test_inspect_provider_error(monkeypatch):
+    """分享失效/提取码错误等解析失败 → 400 带原因。"""
+    patch_inspect(monkeypatch, error="分享不存在")
+    r = client.post("/api/candidates/inspect", headers=AUTH,
+                    json={"share_url": GOOD_URL})
+    assert r.status_code == 400 and "分享解析失败" in r.json()["detail"]
+
+
+async def test_inspect_share_parses_files_and_seasons(tmp_db, monkeypatch):
+    """inspect_share 实际逻辑：过滤非视频/垃圾文件，解析季集/规格，分季聚合。"""
+    from app import candidate_service as cs_mod
+    from app.providers.base import ShareFile
+
+    class FakeProvider:
+        def __init__(self, cookie=None, db_path=None):
+            pass
+
+        async def get_share_stoken(self, pwd_id, passcode=""):
+            return "st"
+
+        async def list_share_files(self, pwd_id, stoken):
+            return [
+                ShareFile(fid="f1", name="余罪.S01E01.2016.1080p.WEB-DL.H264.chs.mp4",
+                          size=800_000_000, is_dir=False, fid_token="t1",
+                          path="余罪 第一季/余罪.S01E01.mp4"),
+                ShareFile(fid="f2", name="余罪.S01E02.2016.1080p.WEB-DL.H264.chs.mp4",
+                          size=810_000_000, is_dir=False, fid_token="t2",
+                          path="余罪 第一季/余罪.S01E02.mp4"),
+                ShareFile(fid="f3", name="06.mkv", size=1, is_dir=False,
+                          fid_token="t3", path="06.mkv"),
+                ShareFile(fid="d0", name="海报", size=0, is_dir=True,
+                          fid_token="t0", path="海报"),
+                ShareFile(fid="f9", name="sample.mp4", size=5, is_dir=False,
+                          fid_token="t9", path="sample.mp4"),
+                ShareFile(fid="f8", name="说明.txt", size=5, is_dir=False,
+                          fid_token="t8", path="说明.txt"),
+            ]
+
+        async def close(self):
+            pass
+
+    monkeypatch.setattr(cs_mod, "QuarkDriveProvider", FakeProvider)
+    monkeypatch.setattr(cs_mod.db, "load_cookie", lambda p: "c=1")
+    svc = cs_mod.CandidateService(db_path=tmp_db)
+    data = await svc.inspect_share(GOOD_URL, "ax72")
+    assert data["video_count"] == 3
+    assert data["other_count"] == 2          # sample.mp4（垃圾）+ 说明.txt（非视频）
+    assert data["is_series"] is True
+    assert data["seasons"] == [{"season": 1, "count": 2, "size_h": "1.5GB"}]
+    files = data["files"]
+    assert [f["episode"] for f in files] == [1, 2, 6]   # 按季集排序
+    assert files[0]["season"] == 1
+    assert files[0]["spec"]["resolution"] == "1080p"
+    assert files[2]["name"] == "06.mkv"      # 裸集数文件：season 为空、episode=6
+    assert files[2]["season"] is None and files[2]["episode"] == 6
+    assert data["total_size"] == 800_000_000 + 810_000_000 + 1
+    assert data["total_size_h"].endswith("GB")
+
+
+async def test_inspect_share_no_cookie_raises(tmp_db, monkeypatch):
+    """未绑定网盘账号时 inspect 报错（由路由转 400）。"""
+    from app import candidate_service as cs_mod
+
+    monkeypatch.setattr(cs_mod.db, "load_cookie", lambda p: None)
+    monkeypatch.setattr(cs_mod.config, "QUARK_COOKIE", "")
+    svc = cs_mod.CandidateService(db_path=tmp_db)
+    try:
+        await svc.inspect_share(GOOD_URL)
+        assert False, "应当抛出 ProviderError"
+    except cs_mod.ProviderError as e:
+        assert "授权" in str(e)
+
+
 # ---------- 页面骨架 ----------
 
 def test_pages_render():

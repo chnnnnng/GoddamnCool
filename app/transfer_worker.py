@@ -18,13 +18,12 @@
 import asyncio
 import json
 import logging
-import os
 import re
 import time
 
 from . import config, db
 from .tmdb import VideoMeta, fetch_meta
-from .matcher import MovieMatcher, JUNK_PATTERN, parse
+from .matcher import MovieMatcher, JUNK_PATTERN, episode_of, parse
 from .providers.base import CloudFile, ProviderAuthError, ProviderError, ShareFile
 from .providers.quark import QuarkDriveProvider
 
@@ -40,19 +39,6 @@ _TERMINAL = {"COMPLETED", "FAILED", "EXPIRED"}
 
 class PermanentError(Exception):
     """不可恢复错误：直接 FAILED，不再重试。"""
-
-
-_BARE_EP_RE = re.compile(r"^(?:EP?[-_. ]?)?(\d{1,3})$", re.IGNORECASE)
-
-
-def _episode_of(name: str) -> int | None:
-    """裸集数文件名（如 02.mp4 / EP06.mkv）的集数提取；parse 失败时的补充手段。"""
-    p = parse(name)
-    if p.episode is not None:
-        return p.episode
-    stem = os.path.splitext(name)[0].strip()
-    m = _BARE_EP_RE.match(stem)
-    return int(m.group(1)) if m else None
 
 
 def parse_pwd_id(share_url: str) -> str:
@@ -159,7 +145,9 @@ class TransferWorker:
                 raise PermanentError(f"分享访问失败: {e}") from e
             entries = await provider.list_share_files(pwd_id, stoken)
             meta = await self._load_meta(task)
-            picked = self._pick_file(entries, meta, task)
+            # whole 模式（转存完整剧集）：跳过选片，整包落盘（阶段 5）
+            picked = (None if task.get("mode") == "whole"
+                      else self._pick_file(entries, meta, task))
 
             if picked is not None:
                 existing = await self._find_duplicate(provider, picked)
@@ -253,7 +241,7 @@ class TransferWorker:
         if task["episode"] is not None:
             hits = []
             for e in videos:
-                ep = _episode_of(e.name)
+                ep = episode_of(e.name)
                 if ep != task["episode"]:
                     continue
                 p = parse(e.name)
@@ -309,12 +297,18 @@ class TransferWorker:
                     located = "save_as_multi"
                 else:
                     raise PermanentError("转存完成但未能在网盘定位到文件")
-        else:  # bulk：整包落盘，播放定位交给 Stream 匹配，不锚定单文件
+        else:  # bulk/whole：整包落盘，播放定位交给 Stream 匹配，不锚定单文件
+            found: list[CloudFile] = []
             if not top_fids:
                 found = await self._search_safe(provider, task["title"])
                 if not found:
                     raise PermanentError("整包转存完成但未能在网盘定位到文件")
                 located = "search"
+            if not result.get("files"):  # 记录落盘文件清单（供 Stream 按季集定位）
+                if not found:
+                    found = await self._search_safe(provider, task["title"])
+                result["files"] = [{"name": f.name, "fid": f.fid, "size": f.size}
+                                   for f in found[:50]]
 
         db.set_task_fields(self.db_path, task["id"],
                            target_fid=fid,

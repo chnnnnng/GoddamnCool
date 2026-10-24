@@ -138,3 +138,42 @@ def test_best_returns_none_on_tie():
 def test_best_below_threshold_none():
     files = [cf("The.Avenge.rs.2012.1080p.mkv")]  # 模糊但不够相似
     assert M.best(files, _movie_meta(year=2010)) is None
+
+
+# ---------- 阶段 5：裸集数提取 / 文件规格解析 ----------
+
+def test_episode_of_bare_and_normal_names():
+    from app.matcher import episode_of
+    assert episode_of("06.mkv") == 6
+    assert episode_of("EP06.mp4") == 6
+    assert episode_of("e12.MP4") == 12
+    assert episode_of("余罪.S01E12.2016.1080p.mp4") == 12  # parse 命中优先
+    assert episode_of("余罪 第12集 1080p.mp4") == 12
+    assert episode_of("余罪.2016.1080p.mp4") is None  # 无集数信息
+    assert episode_of("封面.jpg") is None
+
+
+def test_parse_file_spec_full():
+    from app.matcher import parse_file_spec
+    spec = parse_file_spec("余罪.S01E12.2016.2160p.WEB-DL.H265.DDP5.1.chs.mp4")
+    assert spec["resolution"] == "4K"
+    assert spec["source"] == "WEB-DL"
+    assert spec["codec"] == "H.265"
+    assert spec["audio"] == ["DD+", "5.1"]
+    assert spec["subtitle"] == ["简体"]
+
+
+def test_parse_file_spec_minimal_and_dedup():
+    from app.matcher import parse_file_spec
+    assert parse_file_spec("movie.mkv") == {}  # 无任何标注
+    spec = parse_file_spec("Show.S01.1080p.AAC.AAC.mp4")
+    assert spec["resolution"] == "1080p"
+    assert spec["audio"] == ["AAC"]  # 重复标注去重
+
+
+def test_parse_file_spec_subtitle_variants():
+    from app.matcher import parse_file_spec
+    spec = parse_file_spec("庆余年.第二季.2024.2160p.简繁.国粤双语.mkv")
+    assert spec["resolution"] == "4K"
+    assert spec["subtitle"] == ["简繁"]
+    assert spec["languages"] == ["国粤双语"]

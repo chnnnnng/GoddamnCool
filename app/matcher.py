@@ -8,6 +8,7 @@
 - 垃圾文件（预告/花絮/样片）不参与
 - 置信度不足不返回流
 """
+import os
 import re
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
@@ -235,3 +236,75 @@ class MovieMatcher:
            cands[1].file.fid != top.file.fid:
             return None  # 同分歧义，避免错误播放
         return top
+
+
+# ---- 文件名级补充解析（阶段 5：整包转存定位 / 候选详情规格展示） ----
+
+_BARE_EP_RE = re.compile(r"^(?:EP?[-_. ]?)?(\d{1,3})$", re.IGNORECASE)
+
+
+def episode_of(name: str) -> int | None:
+    """裸集数文件名（如 02.mp4 / EP06.mkv）的集数提取；parse 失败时的补充手段。"""
+    p = parse(name)
+    if p.episode is not None:
+        return p.episode
+    stem = os.path.splitext(name)[0].strip()
+    m = _BARE_EP_RE.match(stem)
+    return int(m.group(1)) if m else None
+
+
+_SPEC_RES_RE = re.compile(r"(?<!\d)(2160p?|1080[pi]|720p?|480p?|4k|uhd)(?!\d)", re.IGNORECASE)
+_SPEC_SOURCE_RE = re.compile(r"(web-?dl|webrip|blu-?ray|bdrip|hdtv|dvdrip|remux)", re.IGNORECASE)
+_SPEC_CODEC_RE = re.compile(r"(x26[45]|h\.?26[45]|hevc|avc|av1|xvid|divx)", re.IGNORECASE)
+_SPEC_AUDIO_RE = re.compile(
+    r"\b(aac|flac|ac-?3|e-?ac-?3|ddp|dd\+|dd|truehd|atmos|opus|dts(?:-?hd)?(?:[ .]ma)?)(?![a-z])"
+    r"|(?<!\d)([257])\.([01])(?!\d)|(双声道|立体声)", re.IGNORECASE)
+_SPEC_SUB_RE = re.compile(r"(简繁|简英|简体|繁体|中英双字|双语字幕|中字|内封|内嵌|外挂|chs|cht)",
+                          re.IGNORECASE)
+_SPEC_LANG_RE = re.compile(r"(国粤双语|普通话|国语|粤语|日语原声|英语原声|韩语原声|双语)")
+
+_SPEC_AUDIO_MAP = {"aac": "AAC", "flac": "FLAC", "ac3": "AC3", "eac3": "E-AC3",
+                   "ddp": "DD+", "dd+": "DD+", "dd": "DD", "truehd": "TrueHD",
+                   "atmos": "Atmos", "dts": "DTS", "dtshd": "DTS-HD",
+                   "dtshdma": "DTS-HD MA", "opus": "Opus", "51": "5.1", "71": "7.1",
+                   "20": "2.0", "双声道": "双声道", "立体声": "立体声"}
+
+
+def parse_file_spec(filename: str) -> dict:
+    """从文件名提取展示规格：分辨率/来源/编码/音轨/字幕/语言（缺省字段省略）。
+
+    仅做文件名启发式标注（网盘文件无法读取媒体流信息），供候选详情参考。
+    """
+    spec: dict = {}
+    m = _SPEC_RES_RE.search(filename)
+    if m:
+        r = m.group(1).lower()
+        spec["resolution"] = "4K" if r in ("2160p", "2160", "4k", "uhd") else r
+    m = _SPEC_SOURCE_RE.search(filename)
+    if m:
+        s = m.group(1).lower().replace("-", "")
+        spec["source"] = {"webdl": "WEB-DL", "webrip": "WEBRip", "bluray": "BluRay",
+                          "bdrip": "BluRay", "hdtv": "HDTV", "dvdrip": "DVDRip",
+                          "remux": "Remux"}.get(s, s.upper())
+    m = _SPEC_CODEC_RE.search(filename)
+    if m:
+        c = m.group(1).lower().replace(".", "")
+        spec["codec"] = {"x265": "H.265", "h265": "H.265", "hevc": "H.265",
+                         "x264": "H.264", "h264": "H.264", "avc": "H.264",
+                         "av1": "AV1", "xvid": "XviD", "divx": "DivX"}.get(c, c.upper())
+    audio = []
+    for m in _SPEC_AUDIO_RE.finditer(filename):
+        a = re.sub(r"[-. ]", "", m.group(0)).lower()
+        audio.append(_SPEC_AUDIO_MAP.get(a, a.upper()))
+    audio = list(dict.fromkeys(audio))
+    if audio:
+        spec["audio"] = audio
+    subs = [{"chs": "简体", "cht": "繁体"}.get(m.group(0).lower(), m.group(0))
+            for m in _SPEC_SUB_RE.finditer(filename)]
+    subs = list(dict.fromkeys(subs))
+    if subs:
+        spec["subtitle"] = subs
+    langs = list(dict.fromkeys(_SPEC_LANG_RE.findall(filename)))
+    if langs:
+        spec["languages"] = langs
+    return spec

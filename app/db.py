@@ -53,6 +53,7 @@ def init(db_path: str, secret_key: str) -> None:
                    share_url TEXT NOT NULL,
                    passcode TEXT NOT NULL DEFAULT '',
                    source TEXT NOT NULL DEFAULT '',
+                   mode TEXT NOT NULL DEFAULT 'episode',  -- 阶段5：episode 指定集 / whole 整包
                    status TEXT NOT NULL DEFAULT 'PENDING',
                    error TEXT NOT NULL DEFAULT '',
                    target_fid TEXT NOT NULL DEFAULT '',   -- 阶段4：转存后文件 fid
@@ -63,12 +64,13 @@ def init(db_path: str, secret_key: str) -> None:
                    updated_at TEXT DEFAULT (datetime('now', 'localtime'))
                )"""
         )
-        # 迁移：旧库（阶段 3 建）缺阶段 4 新列时补齐
+        # 迁移：旧库（阶段 3 建）缺阶段 4/5 新列时补齐
         cols = {r["name"] for r in c.execute("PRAGMA table_info(transfer_tasks)")}
         for col, decl in (("target_fid", "TEXT NOT NULL DEFAULT ''"),
                           ("result_json", "TEXT NOT NULL DEFAULT ''"),
                           ("quark_task_id", "TEXT NOT NULL DEFAULT ''"),
-                          ("attempts", "INTEGER NOT NULL DEFAULT 0")):
+                          ("attempts", "INTEGER NOT NULL DEFAULT 0"),
+                          ("mode", "TEXT NOT NULL DEFAULT 'episode'")):
             if col not in cols:
                 c.execute(f"ALTER TABLE transfer_tasks ADD COLUMN {col} {decl}")
 
@@ -103,10 +105,11 @@ def load_cookie(db_path: str) -> str | None:
 
 def create_task(db_path: str, *, vtype: str, imdb_id: str, season: int | None,
                 episode: int | None, title: str, candidate_title: str,
-                share_url: str, passcode: str = "", source: str = "") -> tuple[dict, bool]:
+                share_url: str, passcode: str = "", source: str = "",
+                mode: str = "episode") -> tuple[dict, bool]:
     """创建转存任务。幂等：同分享链接 + 同影片/集数存在活跃任务时直接复用。
 
-    返回 (task, created)。
+    mode="whole" 表示整包转存（season/episode 记为 None）；返回 (task, created)。
     """
     with _lock, _conn(db_path) as c:
         row = c.execute(
@@ -123,10 +126,10 @@ def create_task(db_path: str, *, vtype: str, imdb_id: str, season: int | None,
         c.execute(
             """INSERT INTO transfer_tasks
                    (id, video_type, imdb_id, season, episode, title,
-                    candidate_title, share_url, passcode, source, status)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING')""",
+                    candidate_title, share_url, passcode, source, mode, status)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING')""",
             (task_id, vtype, imdb_id, season, episode, title,
-             candidate_title, share_url, passcode, source),
+             candidate_title, share_url, passcode, source, mode),
         )
     return get_task(db_path, task_id), True
 
@@ -205,13 +208,15 @@ def list_tasks_by_status(db_path: str, statuses: list[str]) -> list[dict]:
 
 def get_tasks_for_video(db_path: str, vtype: str, imdb_id: str,
                         season: int | None, episode: int | None) -> list[dict]:
-    """按影片（含季集）查询任务，创建时间倒序——Stream 引导流展示进度用。"""
+    """按影片（含季集）查询任务，创建时间倒序——Stream 引导流展示进度用。
+
+    整包任务（mode='whole'）覆盖该影片全部集数，一并返回。"""
     with _lock, _conn(db_path) as c:
         rows = c.execute(
             """SELECT * FROM transfer_tasks
                WHERE video_type = ? AND imdb_id = ?
-                 AND IFNULL(season, -1) = IFNULL(?, -1)
-                 AND IFNULL(episode, -1) = IFNULL(?, -1)
+                 AND ((IFNULL(season, -1) = IFNULL(?, -1)
+                       AND IFNULL(episode, -1) = IFNULL(?, -1)) OR mode = 'whole')
                ORDER BY created_at DESC, id DESC LIMIT 5""",
             (vtype, imdb_id, season, episode),
         ).fetchall()

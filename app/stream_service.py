@@ -4,7 +4,7 @@ import logging
 
 from . import config, db
 from .tmdb import VideoMeta, fetch_meta
-from .matcher import MovieMatcher, parse
+from .matcher import MovieMatcher, episode_of, parse
 from .providers.base import CloudDriveProvider, CloudFile, ProviderAuthError, ProviderError
 from .providers.quark import QuarkDriveProvider
 
@@ -94,8 +94,10 @@ class StreamService:
 
     def _task_located_file(self, files: list[CloudFile], vtype: str, imdb_id: str,
                            season: int | None, episode: int | None) -> CloudFile | None:
-        """在搜索结果里找转存任务明确指定的目标文件（target_fid 或 result_json.name）。"""
+        """在搜索结果里找转存任务明确指定的目标文件（target_fid / result_json.name /
+        整包任务落盘文件清单按季集匹配）。"""
         by_fid = {f.fid: f for f in files}
+        by_name = {f.name: f for f in files}
         for t in db.get_tasks_for_video(self.db_path, vtype, imdb_id,
                                         season, episode):
             if t["status"] != "COMPLETED":
@@ -103,13 +105,22 @@ class StreamService:
             if t["target_fid"] and t["target_fid"] in by_fid:
                 return by_fid[t["target_fid"]]
             try:
-                name = (json.loads(t["result_json"]) or {}).get("name") or ""
+                res = json.loads(t["result_json"]) or {}
             except ValueError:
-                name = ""
-            if name:
-                for f in files:
-                    if f.name == name:
-                        return f
+                res = {}
+            # whole 整包任务：在落盘文件清单里按季集定位（裸集数文件名
+            # 标题匹配必失败，必须靠解析出的集数）
+            for entry in res.get("files") or []:
+                name = entry.get("name") or ""
+                fid = entry.get("fid") or ""
+                if fid in by_fid and episode is not None \
+                        and episode_of(name) == episode:
+                    p = parse(name)
+                    if season is None or p.season in (None, season):
+                        return by_fid[fid]
+            name = res.get("name") or ""
+            if name and name in by_name:
+                return by_name[name]
         return None
 
     async def _search_all(self, provider: CloudDriveProvider, meta: VideoMeta,
@@ -125,11 +136,19 @@ class StreamService:
             if t["status"] != "COMPLETED" or not t["result_json"]:
                 continue
             try:
-                name = json.loads(t["result_json"]).get("name") or ""
+                res = json.loads(t["result_json"]) or {}
             except ValueError:
-                name = ""
+                continue
+            name = res.get("name") or ""
             if name:
                 keywords.append(name)
+            # 整包任务落盘清单：命中目标集数的文件名也参与检索（裸集数
+            # 文件名如 06.mkv 搜不到标题，是裸集数场景唯一可搜的关键词）
+            for entry in res.get("files") or []:
+                fname = entry.get("name") or ""
+                if fname and episode is not None \
+                        and episode_of(fname) == episode:
+                    keywords.append(fname)
         seen: dict[str, CloudFile] = {}
         for kw in dict.fromkeys(k for k in keywords if k):
             try:

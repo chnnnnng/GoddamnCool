@@ -66,6 +66,20 @@ _CSS = """
   .s-FAILED, .s-EXPIRED { background: #fdecec; color: #b3261e; }
   dl { display: grid; grid-template-columns: 96px 1fr; row-gap: 6px; font-size: 14px; }
   dt { color: #666; } dd { margin: 0; word-break: break-all; }
+  .detail { margin-top: 12px; border-top: 1px dashed #ddd; padding-top: 10px; }
+  .filelist { margin: 8px 0; max-height: 260px; overflow-y: auto;
+              border: 1px solid #eee; border-radius: 8px; }
+  .frow { display: flex; align-items: center; gap: 6px; padding: 6px 8px;
+          font-size: 13px; border-bottom: 1px solid #f2f2f2; cursor: pointer; }
+  .frow:last-child { border-bottom: none; }
+  .frow:hover { background: #f7f7fb; }
+  .frow.sel { background: #eef0ff; }
+  .ep { flex: none; background: #ececf5; color: #4a4a6a; border-radius: 5px;
+        padding: 1px 6px; font-size: 12px; font-family: monospace; }
+  .spec { flex: none; background: #eef7ee; color: #256c3a; border-radius: 5px;
+          padding: 1px 6px; font-size: 12px; }
+  .fname { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .fsize { flex: none; color: #666; font-size: 12px; }
 """
 
 
@@ -81,7 +95,8 @@ def _page(title: str, body: str) -> HTMLResponse:
 <body>
 {body}
 </body></html>"""
-    return HTMLResponse(doc)
+    # 管理页内嵌脚本随版本演进，禁止缓存（避免浏览器用旧 JS 调新 API）
+    return HTMLResponse(doc, headers={"Cache-Control": "no-store"})
 
 
 _CANDIDATES_BODY = """
@@ -179,10 +194,14 @@ async function dosearch() {
     const btn = el('button', '', '确认转存到我的网盘');
     btn.onclick = () => confirmSave(btn, c);
     actions.appendChild(btn);
+    const infoBtn = el('button', 'sec', '查看内容');
+    infoBtn.style.marginLeft = '8px';
+    infoBtn.onclick = () => toggleInspect(infoBtn, c, card);
+    actions.appendChild(infoBtn);
     card.appendChild(actions);
     list.appendChild(card);
     pending.push({share_url: c.share_url, passcode: c.passcode,
-                  badge: vbadge, card: card,
+                  badge: vbadge, card: card, infoBtn: infoBtn,
                   state: c.alive_state || '', summary: c.alive_summary || ''});
   }
   // 搜索阶段已带存活检测结果：直接渲染；缺失时兜底走 verify 接口逐个补检
@@ -205,7 +224,10 @@ function aliveText(it, state, summary) {
 function setAlive(it, state, text) {
   it.badge.className = 'vstate v-' + state;
   it.badge.textContent = '存活 ' + text;
-  if (state === 'bad') it.card.classList.add('dead');
+  if (state === 'bad') {
+    it.card.classList.add('dead');
+    if (it.infoBtn) it.infoBtn.disabled = true;  // 失效分享无需解析内容
+  }
 }
 async function verifyLinks(items) {
   if (!items.length) return;
@@ -230,16 +252,16 @@ async function verifyLinks(items) {
     setAlive(it, r.state, aliveText(it, r.state, r.summary || ''));
   }
 }
-async function confirmSave(btn, cand) {
+async function confirmSave(btn, cand, mode, targetId) {
   btn.disabled = true;
   try {
     const data = await api('/api/candidates/confirm', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({
-        vtype: vtype, id: vid,
+        vtype: vtype, id: targetId || vid,
         share_url: cand.share_url, passcode: cand.passcode,
-        title: cand.title, source: cand.source,
+        title: cand.title, source: cand.source, mode: mode || 'episode',
       }),
     });
     showMsg('任务已创建' + (data.created ? '' : '（已有进行中的相同任务）') + '，正在跳转…', true);
@@ -248,6 +270,137 @@ async function confirmSave(btn, cand) {
     showMsg('创建失败：' + e.message, false);
     btn.disabled = false;
   }
+}
+
+// ---- 分享内容详情（阶段 5）：文件规格 + 季集结构 + 整包/单集转存 ----
+const curPart = vid.split(':');
+const curS = curPart[1] ? +curPart[1] : null;
+const curE = curPart[2] ? +curPart[2] : null;
+
+function toggleInspect(btn, cand, card) {
+  if (btn.dataset.open === '1') {
+    const d = card.querySelector('.detail');
+    if (d) d.remove();
+    btn.dataset.open = '';
+    btn.textContent = '查看内容';
+    return;
+  }
+  inspectShare(btn, cand, card);
+}
+
+async function inspectShare(btn, cand, card) {
+  btn.disabled = true;
+  btn.textContent = '解析中…';
+  let data;
+  try {
+    data = await api('/api/candidates/inspect', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({share_url: cand.share_url, passcode: cand.passcode}),
+    });
+  } catch (e) {
+    showMsg('解析失败：' + e.message, false);
+    btn.disabled = false;
+    btn.textContent = '查看内容';
+    return;
+  }
+  btn.disabled = false;
+  btn.dataset.open = '1';
+  btn.textContent = '收起内容';
+  card.appendChild(renderDetail(cand, data));
+}
+
+function specBadges(f) {
+  const sp = f.spec || {};
+  return [sp.resolution, sp.source, sp.codec]
+    .concat(sp.audio || [], sp.subtitle || [], sp.languages || [])
+    .filter(Boolean);
+}
+
+function renderDetail(cand, data) {
+  const box = el('div', 'detail');
+  const head = el('div', 'meta');
+  head.textContent = '视频 ' + data.video_count + ' 个 · 共 ' + data.total_size_h
+    + (data.other_count ? ' · 其他文件 ' + data.other_count + ' 个' : '');
+  box.appendChild(head);
+  if (data.seasons && data.seasons.length) {
+    const chips = el('div', 'badges');
+    chips.style.marginTop = '6px';
+    for (const s of data.seasons) {
+      chips.appendChild(el('span', '', 'S' + String(s.season).padStart(2, '0')
+        + ' · ' + s.count + ' 集 · ' + s.size_h));
+    }
+    box.appendChild(chips);
+  }
+  // 文件列表：点选行作为"仅转存所选剧集"的目标集
+  let target = null;
+  let part = null;   // 按钮在文件行之后创建，点选行时刷新其文字
+  const rows = [];
+  const list = el('div', 'filelist');
+  const files = data.files || [];
+  const epTag = (f) => (f.season != null ? 'S' + String(f.season).padStart(2, '0') : '')
+    + (f.episode != null ? 'E' + String(f.episode).padStart(2, '0') : '');
+  const setTarget = (row, f) => {
+    for (const r of rows) r.classList.remove('sel');
+    row.classList.add('sel');
+    target = {s: f.season, e: f.episode};
+    if (part && f.episode != null) part.textContent = '仅转存所选剧集（' + epTag(f) + '）';
+  };
+  const buildRow = (f) => {
+    const row = el('div', 'frow');
+    row._ep = {s: f.season, e: f.episode};   // 默认选中匹配用
+    if (f.season != null || f.episode != null) {
+      row.appendChild(el('span', 'ep', epTag(f)));
+    }
+    const nm = el('span', 'fname', f.path || f.name);
+    nm.title = f.path || f.name;
+    row.appendChild(nm);
+    for (const b of specBadges(f)) row.appendChild(el('span', 'spec', b));
+    row.appendChild(el('span', 'fsize', f.size_h));
+    row.onclick = () => setTarget(row, f);
+    rows.push(row);
+    return row;
+  };
+  for (const f of files.slice(0, 20)) list.appendChild(buildRow(f));
+  if (files.length > 20) {
+    const more = el('div', 'meta', '… 其余 ' + (files.length - 20) + ' 个文件');
+    more.style.padding = '6px 8px';
+    const exp = el('button', 'sec', '展开全部');
+    exp.style.marginLeft = '8px';
+    exp.onclick = () => {
+      for (const f of files.slice(20)) list.appendChild(buildRow(f));
+      more.remove();
+    };
+    more.appendChild(exp);
+    list.appendChild(more);
+  }
+  // 默认选中当前观看的集（裸集数合集按集数匹配；无匹配则第一个文件行）
+  let def = null;
+  if (curS != null && curE != null) {
+    def = rows.find((r) => r._ep && r._ep.e === curE
+          && (r._ep.s == null || r._ep.s === curS)) || null;
+  }
+  box.appendChild(list);
+  const btns = el('div', '');
+  btns.style.marginTop = '10px';
+  if (vtype === 'series' && files.length) {
+    const whole = el('button', '', '转存完整剧集');
+    whole.onclick = () => confirmSave(whole, cand, 'whole', null);
+    part = el('button', 'sec', '仅转存所选剧集');
+    part.style.marginLeft = '8px';
+    part.onclick = () => {
+      if (!target) return showMsg('请先在文件列表中点选目标剧集', false);
+      if (target.e == null) return showMsg('所选文件未标注集数，无法定位单集', false);
+      const s = target.s != null ? target.s : (curS != null ? curS : 1);
+      confirmSave(part, cand, 'episode', vid.split(':')[0] + ':' + s + ':' + target.e);
+    };
+    btns.appendChild(whole);
+    btns.appendChild(part);
+    btns.appendChild(el('span', 'meta', '（点选文件行可切换目标集）'));
+  }
+  box.appendChild(btns);
+  (def || rows[0])?.onclick?.();  // 按钮就绪后再触发默认选中，顺带刷新按钮文字
+  return box;
 }
 dosearch();
 </script>
@@ -402,15 +555,43 @@ async def candidates_confirm(request: Request):
     meta = await fetch_meta(imdb_id, vtype, candidate_service.db_path)
     if meta is None or not meta.title:
         return JSONResponse({"detail": "影片元数据获取失败，请稍后重试"}, status_code=400)
+    mode = body.get("mode") or "episode"
+    if mode not in ("episode", "whole"):
+        return JSONResponse({"detail": "mode 参数无效（episode/whole）"}, status_code=400)
+    # whole（转存完整剧集）：任务不锚定季集，整包落盘；episode 仅转存所选集
     task, created = db.create_task(
-        config.DB_PATH, vtype=vtype, imdb_id=imdb_id, season=season, episode=episode,
+        config.DB_PATH, vtype=vtype, imdb_id=imdb_id,
+        season=None if mode == "whole" else season,
+        episode=None if mode == "whole" else episode,
         title=meta.title,
         candidate_title=(body.get("title") or "")[:300],
         share_url=share_url,
         passcode=(body.get("passcode") or "")[:32],
         source=(body.get("source") or "")[:100],
+        mode=mode,
     )
     return {"task_id": task["id"], "created": created, "status": task["status"]}
+
+
+@router.post("/api/candidates/inspect")
+async def candidates_inspect(request: Request):
+    """解析分享链接内容清单与文件规格（大小/清晰度/音轨/字幕/季集结构）。
+
+    实时查询夸克分享目录树并解析文件名规格，供候选详情展示与转存选择。"""
+    if not _check_token(request):
+        return JSONResponse({"detail": "未授权"}, status_code=401)
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"detail": "请求体必须是 JSON"}, status_code=400)
+    url = (body.get("share_url") or "").strip()
+    if not SHARE_URL_RE.match(url):
+        return JSONResponse({"detail": "分享链接无效（仅支持 pan.quark.cn 分享链接）"},
+                            status_code=400)
+    try:
+        return await candidate_service.inspect_share(url, (body.get("passcode") or "")[:32])
+    except Exception as e:
+        return JSONResponse({"detail": f"分享解析失败: {e}"}, status_code=400)
 
 
 @router.post("/api/candidates/verify")

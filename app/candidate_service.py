@@ -8,20 +8,32 @@
 """
 import asyncio
 import logging
+import os
 import re
 from datetime import datetime
 from difflib import SequenceMatcher
 
-from . import config
+from . import config, db
 from .tmdb import VideoMeta, fetch_meta
 from .stream_service import parse_video_id
+from .matcher import JUNK_PATTERN, VIDEO_EXTS, episode_of, parse, parse_file_spec
+from .providers.base import ProviderError
+from .providers.quark import QuarkDriveProvider
 from .providers.search import PanSouProvider, ResourceSearchProvider, SearchCandidate, SearchError
+from .transfer_worker import parse_pwd_id
 
 log = logging.getLogger(__name__)
 
 _JUNK_RE = re.compile(r"trailer|teaser|sample|featurette|花絮|预告|样片|片段", re.IGNORECASE)
 _SEASON_RE = re.compile(r"[sS](\d{1,2})\b|第\s*(\d{1,2})\s*季")
 _YEAR_RE = re.compile(r"(19|20)\d{2}")
+
+
+def _human_size(n: int) -> str:
+    for unit, div in (("TB", 1 << 40), ("GB", 1 << 30), ("MB", 1 << 20), ("KB", 1 << 10)):
+        if n >= div:
+            return f"{n / div:.1f}{unit}"
+    return f"{n}B"
 
 
 def _norm(s: str) -> str:
@@ -193,3 +205,59 @@ class CandidateService:
                         "state": r.get("state") or "uncertain",
                         "summary": r.get("summary") or "未获取检测结果"})
         return out
+
+    async def inspect_share(self, share_url: str, passcode: str = "") -> dict:
+        """解析分享链接的内容清单与文件规格（阶段 5，实时查询夸克）。
+
+        返回 {"video_count", "other_count", "total_size", "total_size_h",
+        "is_series", "seasons", "files"}；files 每项含 name/path/fid/size/
+        size_h/season/episode/spec（清晰度/编码/音轨/字幕/语言，来自文件名标注）。
+        分享失效/提取码错误等抛 ProviderError。
+        """
+        cookie = db.load_cookie(self.db_path) or (config.QUARK_COOKIE or None)
+        if not cookie:
+            raise ProviderError("未绑定网盘账号，请访问 /setup 完成授权")
+        provider = QuarkDriveProvider(cookie=cookie, db_path=self.db_path)
+        try:
+            pwd_id = parse_pwd_id(share_url)
+            stoken = await provider.get_share_stoken(pwd_id, passcode)
+            entries = await provider.list_share_files(pwd_id, stoken)
+        finally:
+            await provider.close()
+
+        files: list[dict] = []
+        other_count = 0
+        for e in entries:
+            if e.is_dir:
+                continue
+            if os.path.splitext(e.name)[1].lower() not in VIDEO_EXTS \
+                    or JUNK_PATTERN.search(e.name):
+                other_count += 1
+                continue
+            p = parse(e.name)
+            files.append({
+                "name": e.name, "path": e.path, "fid": e.fid, "size": e.size,
+                "size_h": _human_size(e.size),
+                "season": p.season, "episode": p.episode or episode_of(e.name),
+                "spec": parse_file_spec(e.name),
+            })
+        files.sort(key=lambda f: ((f["season"] or 99), (f["episode"] or 999), f["name"]))
+        total_size = sum(f["size"] for f in files)
+        seasons: dict[int, dict] = {}
+        for f in files:
+            if f["season"] is not None:
+                s = seasons.setdefault(f["season"], {"count": 0, "size": 0})
+                s["count"] += 1
+                s["size"] += f["size"]
+        return {
+            "video_count": len(files),
+            "other_count": other_count,
+            "total_size": total_size,
+            "total_size_h": _human_size(total_size),
+            "is_series": any(f["season"] is not None or f["episode"] is not None
+                             for f in files),
+            "seasons": [{"season": s, "count": v["count"],
+                         "size_h": _human_size(v["size"])}
+                        for s, v in sorted(seasons.items())],
+            "files": files,
+        }
