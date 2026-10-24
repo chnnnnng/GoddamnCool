@@ -6,7 +6,7 @@ import os
 
 import pytest
 
-from app.name_parser import MessyNameParser, VIDEO_EXTS
+from app.name_parser import MessyNameParser, canonical_with_context, VIDEO_EXTS
 
 P = MessyNameParser()
 SAMPLES = os.path.join(os.path.dirname(__file__), "data", "messy_filenames.txt")
@@ -226,3 +226,36 @@ def test_all_samples_season_episode_sanity():
 ])
 def test_canonical_doc_examples(name, expected):
     assert P.canonical(name) == expected
+
+
+# ---- 上下文兜底（搜索名/分享名/文件夹名） ----
+
+def test_canonical_context_for_titleless():
+    """纯季集名结合搜索名补全标题。"""
+    assert canonical_with_context("SE03.11.mp4", search_title="三体") == \
+        "三体.S03E11.mp4"
+
+
+def test_canonical_context_priority():
+    """搜索名 → 分享名 → 文件夹名 依次兜底，搜索名优先。"""
+    out = canonical_with_context("06.mkv", search_title="狂飙",
+                                   share_title="狂飙全集", folder="第二季")
+    assert out == "狂飙.S01E06.mkv"
+
+
+def test_canonical_context_folder_fallback():
+    """无搜索/分享名时用文件夹名，且文件夹名先解析提纯。"""
+    out = canonical_with_context("SE01.02.mkv", folder="怪奇物语.S05.4K")
+    assert out == "怪奇物语.S01E02.mkv"
+
+
+def test_canonical_context_meta_only_ctx_skipped():
+    """上下文本身无标题（如"第二季"）不可用作标题，保留原名。"""
+    assert canonical_with_context("01.mkv", share_title="第二季") == "01.mkv"
+
+
+def test_canonical_context_ignored_when_title_exists():
+    """文件名自带标题时忽略上下文。"""
+    out = canonical_with_context("Zootopia.2016.2160p.BluRay.x264-CHD.mkv",
+                                   search_title="疯狂动物城")
+    assert out == "Zootopia.2016.2160p.BluRay.H.264-CHD.mkv"

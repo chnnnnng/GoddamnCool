@@ -189,6 +189,53 @@
       .catch(function (e) { showMsg(e.message, false); });
   });
 
+  // ---- 名称解析问题名单（无法解析出标题的文件名） ----
+
+  var issueRows = document.getElementById('issue-rows');
+  var SOURCE_TEXT = { sample: '采样', search: '搜索', task: '任务' };
+
+  function renderIssues(issues) {
+    issueRows.textContent = '';
+    if (!issues.length) {
+      emptyIssuesRow('暂无记录');
+      return;
+    }
+    issues.forEach(function (it) {
+      var tr = document.createElement('tr');
+      var tdN = document.createElement('td');
+      tdN.className = 'wrap';
+      tdN.textContent = it.name;  // textContent 渲染，防 XSS
+      var tdS = document.createElement('td');
+      tdS.textContent = SOURCE_TEXT[it.source] || it.source || '—';
+      var tdH = document.createElement('td');
+      tdH.textContent = it.hits;
+      var tdT = document.createElement('td');
+      tdT.className = 'meta';
+      tdT.textContent = it.last_seen;
+      tr.append(tdN, tdS, tdH, tdT);
+      issueRows.appendChild(tr);
+    });
+  }
+
+  function emptyIssuesRow(text) {
+    var tr = document.createElement('tr');
+    var td = document.createElement('td');
+    td.colSpan = 4;
+    td.className = 'meta';
+    td.textContent = text;
+    tr.appendChild(td);
+    issueRows.appendChild(tr);
+  }
+
+  function loadIssues() {
+    api('/api/admin/name-issues')
+      .then(function (r) { renderIssues(r.issues || []); })
+      .catch(function (e) { emptyIssuesRow('加载失败：' + e.message); });
+  }
+
+  document.getElementById('issues-reload').addEventListener('click', loadIssues);
+
   loadUsers();
   loadConfig();
+  loadIssues();
 })();

@@ -29,6 +29,8 @@ from fastapi.responses import JSONResponse
 from . import config, db, settings
 from .auth import require_user
 from .matcher import VIDEO_EXTS, parse, parse_file_spec
+from .name_parser import canonical_with_context
+from .name_parser import parser as name_parser
 from .tmdb import fetch_meta
 from .providers.search import SHARE_URL_RE
 from .providers.quark import QuarkDriveProvider
@@ -150,6 +152,12 @@ async def candidates_search(request: Request, vtype: str = "movie", id: str = ""
             # 缓存中的旧 detail 无 warn：补算命名规范提示（与任务页同一规则；
             # 搜索场景无季集目标，仅查无标题）
             f.setdefault("warn", _name_warn(nm, None, None))
+            # 规范文件名：无标题名结合搜索名/分享名/文件夹名兜底
+            f.setdefault("canonical", canonical_with_context(
+                nm, search_title=keyword or "",
+                share_title=getattr(c, "title", "") or "",
+                folder=_folder_of(f.get("path") or "")))
+            _record_unparsed(nm, "search")
         if existing:
             d["existing_count"] = sum(
                 1 for f in d["files"] if f.get("exists"))
@@ -279,8 +287,16 @@ async def candidates_inspect(request: Request):
     except Exception as e:
         return JSONResponse({"detail": f"分享解析失败: {e}"}, status_code=400)
     # 文件名不规范标志（与任务页同一规则，inspect 无季集目标，仅查无标题）
+    ctx_kw = (body.get("kw") or "").strip()
+    ctx_title = (body.get("title") or "").strip()[:300]  # 候选/分享标题（前端传）
     for f in data.get("files", []):
-        f["warn"] = _name_warn(f.get("name") or "", None, None)
+        nm = f.get("name") or ""
+        f["warn"] = _name_warn(nm, None, None)
+        # 规范文件名：无标题名结合搜索名/分享名/文件夹名兜底
+        f["canonical"] = canonical_with_context(
+            nm, search_title=ctx_kw, share_title=ctx_title,
+            folder=_folder_of(f.get("path") or ""))
+        _record_unparsed(nm, "search")
     # "网盘中已存在"标记：实时比对用户网盘文件名集合（不随 inspect 缓存过期）
     data["existing_count"] = 0
     try:
@@ -332,6 +348,18 @@ async def candidates_verify(request: Request):
 @router.get("/task/{task_id}")
 async def task_page(task_id: str):
     return page("task.html")
+
+
+def _folder_of(path: str) -> str:
+    """分享内文件所在文件夹名（路径最深一级目录，用于无标题文件名兜底）。"""
+    d = os.path.dirname((path or "").replace("\\", "/")).strip("/")
+    return d.rsplit("/", 1)[-1] if d else ""
+
+
+def _record_unparsed(name: str, source: str) -> None:
+    """解析不出标题的文件名入库（纯季集/编号等），供管理员跟进解析器。"""
+    if name and name_parser.parse(name).titleless:
+        db.record_name_issue(config.DB_PATH, name, source)
 
 
 def _spec_badges(name: str) -> list[str]:
@@ -406,8 +434,13 @@ def _task_files(task: dict) -> list[dict]:
         f["warn"] = _name_warn(f["name"], task.get("season"),
                                task.get("episode"))
         f["name_ok"] = not f["warn"]
+        # 规范文件名：任务锚定影片标题（title）与分享资源标题兜底
+        f["canonical"] = canonical_with_context(
+            f["name"], search_title=task.get("title") or "",
+            share_title=task.get("candidate_title") or "")
         f["exists"] = f["name"] in existed or \
             os.path.basename(f["name"]) in existed
+        _record_unparsed(f["name"], "task")
     return raw
 
 

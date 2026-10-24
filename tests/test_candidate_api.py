@@ -567,11 +567,19 @@ def test_inspect_files_warn_flag(tmp_db, monkeypatch):
                    "path": "2012.2009.1080p.BluRay.mkv",
                    "fid": "f4", "size": 500}]})  # 片名含年份，不误报
     files = client.post("/api/candidates/inspect", headers=AUTH,
-                        json={"share_url": GOOD_URL}).json()["files"]
+                        json={"share_url": GOOD_URL, "kw": "三体",
+                              "title": "三体 全集"}).json()["files"]
     assert "标题" in files[0]["warn"]
     assert files[1]["warn"] == ""
     assert "标题" in files[2]["warn"]
     assert files[3]["warn"] == ""
+    # 规范文件名：自带标题的忽略上下文；无标题名用搜索名/分享名兜底
+    assert files[0]["canonical"] == "三体.S03E11.mp4"
+    assert files[1]["canonical"] == "Movie.2016.1080p.BluRay.H.264.mkv"
+    assert files[2]["canonical"] == "三体.S01E1001.mp4"
+    # 解析问题名入库（无标题文件名，供管理员跟进解析器）
+    issues = {it["name"] for it in cr.db.list_name_issues(cr.config.DB_PATH)}
+    assert {"SE03.11.mp4", "1001.mp4"} <= issues
 
 
 async def test_inspect_share_parses_files_and_seasons(tmp_db, monkeypatch):

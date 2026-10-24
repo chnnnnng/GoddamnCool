@@ -253,6 +253,7 @@
   overflow-wrap: anywhere;
   font-size: .9rem;
 }
+.frow .cname { flex: 1 1 100%; }  /* 规范文件名独占一行 */
 .frow .fmeta {
   color: var(--dim);
   font-size: .78rem;

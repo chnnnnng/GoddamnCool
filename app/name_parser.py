@@ -485,3 +485,27 @@ def _has_words(s: str) -> bool:
 
 # 模块级单例，调用方直接 import 使用
 parser = MessyNameParser()
+
+
+def canonical_with_context(name: str, *, search_title: str = "",
+                           share_title: str = "", folder: str = "",
+                           **kwargs) -> str:
+    """结合上下文生成规范文件名（转存/展示场景用）。
+
+    文件名本身能解析出标题时忽略上下文；纯季集/编号等无标题名
+    （01.mkv / SE03.11.mp4）按 搜索名 → 分享名 → 文件夹名 顺序取
+    第一个可解析出标题的上下文补全。上下文名本身也可能是乱七八糟
+    命名（"三体 2023 4K全集"），先经解析器提纯再使用。
+
+    kwargs 透传 canonical()（style/include_group/season/episode 等）。"""
+    info = parser.parse(name)
+    if _has_words(info.title) or _has_words(info.title_en):
+        return parser.canonical(info, **kwargs)
+    for ctx in (search_title, share_title, folder):
+        ctx = (ctx or "").strip()
+        if not ctx:
+            continue
+        t = parser.parse(ctx).title
+        if _has_words(t):
+            return parser.canonical(info, title=t, **kwargs)
+    return parser.canonical(info, **kwargs)

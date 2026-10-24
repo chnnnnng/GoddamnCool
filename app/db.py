@@ -42,6 +42,15 @@ def init(db_path: str, secret_key: str) -> None:
                )"""
         )
         c.execute(
+            """CREATE TABLE IF NOT EXISTS name_issues (
+                   name TEXT PRIMARY KEY,            -- 原始文件名（去重键）
+                   source TEXT NOT NULL DEFAULT '',  -- 来源：sample 采样/search 搜索/task 任务
+                   hits INTEGER NOT NULL DEFAULT 1,  -- 累计出现次数
+                   first_seen TEXT DEFAULT (datetime('now', 'localtime')),
+                   last_seen TEXT DEFAULT (datetime('now', 'localtime'))
+               )"""
+        )
+        c.execute(
             """CREATE TABLE IF NOT EXISTS transfer_tasks (
                    id TEXT PRIMARY KEY,               -- uuid4 hex，防猜测遍历
                    video_type TEXT NOT NULL,          -- movie / series
@@ -341,6 +350,31 @@ def save_tmdb_meta(db_path: str, imdb_id: str, vtype: str, data: dict) -> None:
                    data = excluded.data, updated_at = excluded.updated_at""",
             (imdb_id, vtype, json.dumps(data, ensure_ascii=False), time.time()),
         )
+
+
+# ---- 名称解析问题名单（无标题文件名，管理员跟进） ----
+
+def record_name_issue(db_path: str, name: str, source: str = "search") -> None:
+    """记录无法解析出标题的文件名（去重累计，供管理员跟进名称解析器）。"""
+    with _lock, _conn(db_path) as c:
+        c.execute(
+            """INSERT INTO name_issues (name, source) VALUES (?, ?)
+               ON CONFLICT(name) DO UPDATE SET
+                   source = excluded.source, hits = hits + 1,
+                   last_seen = datetime('now', 'localtime')""",
+            (name[:300], source[:16]),
+        )
+
+
+def list_name_issues(db_path: str, limit: int = 500) -> list[dict]:
+    """解析问题文件名清单（最近出现优先）。"""
+    with _lock, _conn(db_path) as c:
+        rows = c.execute(
+            """SELECT name, source, hits, first_seen, last_seen
+               FROM name_issues ORDER BY last_seen DESC, hits DESC LIMIT ?""",
+            (limit,),
+        ).fetchall()
+    return [dict(r) for r in rows]
 
 
 # ---- 通用 KV 缓存（搜索结果 / 分享详情，TTL 过期） ----

@@ -157,3 +157,7 @@ dt { color: var(--dim); }
 dd { margin: 0; word-break: break-all; }
 
 ol { padding-left: 20px; line-height: 1.9; }
+
+/* 规范文件名（搜索详情弹窗/任务页文件名下方第二行） */
+.cname { display: block; color: var(--accent); opacity: .85;
+         font-size: .78rem; overflow-wrap: anywhere; margin-top: 2px; }

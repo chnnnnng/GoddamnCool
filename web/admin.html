@@ -62,6 +62,24 @@
     <button type="button" id="cfg-save">保存配置</button>
   </div>
 
+  <!-- 名称解析问题 -->
+  <div class="card">
+    <h1>名称解析问题</h1>
+    <p class="meta">搜索/转存中遇到、无法从文件名解析出影片标题的资源名（含历史采样基线），
+      用于持续跟进「乱七八糟文件名解析器」的规则覆盖。</p>
+    <div class="tablewrap">
+      <table>
+        <thead>
+          <tr><th>文件名</th><th>来源</th><th>次数</th><th>最近出现</th></tr>
+        </thead>
+        <tbody id="issue-rows">
+          <tr><td colspan="4" class="meta">加载中…</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <button type="button" id="issues-reload" style="margin-top:12px">刷新</button>
+  </div>
+
   <p id="msg" class="msg" hidden></p>
 </main>
 <script src="/static/js/common.js"></script>

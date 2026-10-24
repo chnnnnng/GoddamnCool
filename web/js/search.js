@@ -113,8 +113,10 @@ function buildAliveChips() {
 }
 
 /* ---- 搜索 ---- */
+let lastKw = '';  // 最近一次搜索关键词（inspect 请求的无标题文件名兜底上下文）
 async function dosearch() {
   const kw = kwEl.value.trim();
+  lastKw = kw;
   if (!kw && !anchored) { kwEl.focus(); return; }  // 锚定模式空关键词由服务端 TMDB 双语名补齐
   btnEl.disabled = true;
   btnEl.textContent = '搜索中…';
@@ -204,10 +206,16 @@ function renderCard(c) {
     V_TEXT[c.alive_state] || '未检测');
   if (c.alive_summary) v.title = c.alive_summary;
   badges.appendChild(v);
+  // 网盘中已有同名文件：绿色 badge 紧跟在"有效/已失效"之后
+  const sum = c.detail || c.summary;
+  if (sum && sum.existing_count) {
+    const ex = el('span', 'vstate v-ok', `网盘中已有 ${sum.existing_count} 项`);
+    ex.title = '网盘中已有同名文件，转存仍会执行（重名将由网盘自动处理）';
+    badges.appendChild(ex);
+  }
   card.appendChild(badges);
 
-  // 内容详情摘要直显：inspect 过用完整数据（含"网盘中已有"），否则用搜索摘要
-  const sum = c.detail || c.summary;
+  // 季集/规格摘要直显（"网盘中已有"已在上方 badge 显示，不再重复出现在摘要行）
   if (sum) appendDetailSummary(card, sum);
 
   if (c.share_url) {
@@ -265,35 +273,45 @@ function appendDetailSummary(card, d) {
   if (chips.children.length) card.appendChild(chips);
   const sum = el('div', 'dsum',
     `视频 ${d.video_count} 个 · 共 ${d.total_size_h}` +
-    (d.other_count ? ` · 其他文件 ${d.other_count} 个` : '') +
-    (d.existing_count ? ` · 网盘中已有 ${d.existing_count} 项` : ''));
+    (d.other_count ? ` · 其他文件 ${d.other_count} 个` : ''));
   card.appendChild(sum);
 }
 
 /* ---- 查看内容弹窗 ---- */
 async function openDetail(btn, c) {
   btn.disabled = true;
-  btn.textContent = '解析中…';
-  // 先弹窗 + 顶部加载气泡（分享解析可能较慢），完成后填充内容
   modalCand = c;
   pickedFids = new Set();
   mtitleEl.textContent = c.title || '(无标题)';
+  if (c.detail && c.detail.files) {
+    // 搜索阶段已拿到内容详情与"网盘中已有"标记：立即渲染，无需解析等待
+    mbodyEl.textContent = '';
+    mbodyEl.appendChild(renderDetail(c, c.detail));
+    modalEl.hidden = false;
+    mcloseEl.focus();
+    btn.disabled = false;
+    return;
+  }
   mbodyEl.textContent = '';
   mbodyEl.appendChild(el('div', 'hint', '加载中…'));
   modalEl.hidden = false;
   mcloseEl.focus();
   showLoading('解析分享中…');
   try {
-    // 总是实时调 inspect：网盘"已有同名"标记需要新鲜数据（service 层有分享缓存）
-    const data = await api('/api/candidates/inspect', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ share_url: c.share_url, passcode: c.passcode }),
-    });
-    c.detail = data;
+    if (!c.detail || !c.detail.files) {
+      // 仅当搜索阶段未拿到内容详情（如未检测/失效候选）才实时解析；
+      // 有效候选的文件列表与"网盘中已有"标记已随搜索返回，直接打开
+      const data = await api('/api/candidates/inspect', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ share_url: c.share_url, passcode: c.passcode,
+          title: c.title || '', kw: lastKw }),
+      });
+      c.detail = data;
+    }
     mbodyEl.textContent = '';
     mbodyEl.appendChild(renderDetail(c, c.detail));
-    renderResults();  // 弹窗解析完成后回填卡片摘要（含"网盘中已有 N 项"）
+    renderResults();  // 弹窗打开后回填卡片（含"网盘中已有 N 项"badge）
   } catch (e) {
     showMsg('查看内容失败：' + (e.message || e), false);
     hideModal();
@@ -334,8 +352,7 @@ function renderDetail(c, d) {
   if (chips.children.length) wrap.appendChild(chips);
   wrap.appendChild(el('div', 'dsum',
   `视频 ${d.video_count} 个 · 共 ${d.total_size_h}` +
-  (d.other_count ? ` · 其他文件 ${d.other_count} 个` : '') +
-  (d.existing_count ? ` · 网盘中已有 ${d.existing_count} 项` : '')));
+  (d.other_count ? ` · 其他文件 ${d.other_count} 个` : '')));
 
   /* 按钮：
      - 独立【转存全部剧集】按钮：仅多视频时显示，无需手动全选；
@@ -380,6 +397,12 @@ function renderDetail(c, d) {
       : '';
     const nm = el('div', 'nm', f.path || f.name);
     row.appendChild(nm);
+    if (f.canonical && f.canonical !== (f.path || f.name)) {
+      // 规范文件名（服务端解析 + 搜索名/分享名/文件夹名兜底）
+      const cn = el('div', 'cname', '→ ' + f.canonical);
+      cn.title = '规范文件名（按此命名可被媒体库正确识别）';
+      row.appendChild(cn);
+    }
     const sp = formatSpec(f.spec);
     row.appendChild(el('div', 'fmeta',
       `${f.size_h}${sp ? ' · ' + sp : ''}${row._ep ? ' · ' + row._ep : ''}`));

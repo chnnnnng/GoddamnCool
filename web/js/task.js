@@ -57,6 +57,13 @@ function fileTable(files) {
       b.title = f.warn;  // 悬停查看完整建议
       tdName.appendChild(b);
     }
+    if (f.canonical && f.canonical !== f.name) {  // 规范文件名（第二行）
+      const cn = document.createElement('span');
+      cn.className = 'cname';
+      cn.textContent = '→ ' + f.canonical;
+      cn.title = '规范文件名（按此命名可被媒体库正确识别）';
+      tdName.appendChild(cn);
+    }
     const tdSize = document.createElement('td');
     tdSize.textContent = f.size > 0 ? (f.size_h || humanSize(f.size)) : '—';
     const tdSpec = document.createElement('td');
