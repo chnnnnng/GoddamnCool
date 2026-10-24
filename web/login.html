@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>登录 · {{APP_NAME}}</title>
+<link rel="stylesheet" href="/static/css/common.css">
+<link rel="stylesheet" href="/static/css/account.css">
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="/search"><span class="dot"></span>{{APP_NAME}}</a>
+</header>
+<main>
+  <div class="card">
+    <h1 id="page-title">登录</h1>
+    <div class="tabs">
+      <button type="button" id="tab-login" class="tab active">登录</button>
+      <button type="button" id="tab-reg" class="tab">注册</button>
+    </div>
+    <form id="form-login">
+      <label for="li-email">邮箱</label>
+      <input id="li-email" type="email" autocomplete="username" required>
+      <label for="li-pass">密码</label>
+      <input id="li-pass" type="password" autocomplete="current-password" required>
+      <button type="submit">登录</button>
+    </form>
+    <form id="form-reg" hidden>
+      <label for="rg-email">邮箱</label>
+      <input id="rg-email" type="email" autocomplete="username" required>
+      <label for="rg-pass">密码（至少 8 位）</label>
+      <input id="rg-pass" type="password" autocomplete="new-password" minlength="8" required>
+      <label for="rg-invite">邀请码</label>
+      <input id="rg-invite" required>
+      <button type="submit">注册</button>
+      <p class="meta">注册需向管理员获取邀请码；邀请码与注册邮箱绑定后不可更改。</p>
+    </form>
+    <p id="msg" class="msg"></p>
+  </div>
+</main>
+<script src="/static/js/common.js"></script>
+<script src="/static/js/auth.js"></script>
+</body>
+</html>

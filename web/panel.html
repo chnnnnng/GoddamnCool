@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>控制面板 · {{APP_NAME}}</title>
+<link rel="stylesheet" href="/static/css/common.css">
+<link rel="stylesheet" href="/static/css/account.css">
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="/search"><span class="dot"></span>{{APP_NAME}}</a>
+  <span class="spacer"></span>
+  <a class="button sec" href="/search">搜索资源</a>
+  <button type="button" class="sec" id="btn-logout">登出</button>
+</header>
+<main>
+  <!-- 账户概览 -->
+  <div class="card">
+    <h1>账户</h1>
+    <dl class="kv">
+      <dt>邮箱</dt><dd id="acc-email">加载中…</dd>
+      <dt>角色</dt><dd><span id="acc-role" class="badge">…</span><span id="acc-tier" class="badge">…</span></dd>
+      <dt>今日搜索</dt><dd id="acc-quota-search">…</dd>
+      <dt>今日转存</dt><dd id="acc-quota-transfer">…</dd>
+    </dl>
+  </div>
+
+  <!-- 网盘凭证 -->
+  <div class="card">
+    <h1>网盘凭证</h1>
+    <p class="meta">绑定你自己的夸克网盘 Cookie：搜索、解析分享内容与转存全部使用
+      你本人的网盘账号，与他人互不可见。获取方式：浏览器登录 pan.quark.cn →
+      F12 → 应用(Application) → Cookie → 复制整串（须包含 <code>__puus</code>）。</p>
+    <dl class="kv">
+      <dt>绑定状态</dt><dd id="ck-state"><span class="badge">检测中…</span></dd>
+    </dl>
+    <form id="form-cookie">
+      <label for="ck-input">Cookie 内容（含 __puus 的完整字符串）</label>
+      <textarea id="ck-input" placeholder="kps=…; sign=…; __puus=…"></textarea>
+      <button type="submit">保存绑定</button>
+      <button type="button" class="sec" id="ck-unbind">解除绑定</button>
+    </form>
+  </div>
+
+  <!-- 保存目录 -->
+  <div class="card">
+    <h1>转存保存目录</h1>
+    <p class="meta">转存的文件将保存到你网盘根目录下此文件夹（不存在会自动创建）；
+      留空表示使用服务器默认目录。</p>
+    <div class="row">
+      <input id="sd-input" maxlength="64" placeholder="例如：影视资源">
+      <button type="button" id="sd-save">保存</button>
+      <button type="button" class="sec" id="sd-clear">恢复默认</button>
+    </div>
+  </div>
+
+  <!-- Stremio 接入 -->
+  <div class="card">
+    <h1>Stremio 接入</h1>
+    <p class="meta">在 Stremio → Add-ons → Community Plugins → URL 中粘贴以下地址安装，
+      播放与转存均使用你上面绑定的网盘。</p>
+    <div class="row">
+      <input id="addon-url" readonly>
+      <button type="button" id="addon-copy">复制</button>
+      <button type="button" class="sec" id="addon-rotate">重置地址</button>
+    </div>
+    <p class="meta">重置地址会使旧 Add-on 立即失效（分享给他人后想收回时使用）。</p>
+  </div>
+
+  <!-- 修改密码 -->
+  <div class="card">
+    <h1>修改密码</h1>
+    <form id="form-pass">
+      <label for="pw-old">原密码</label>
+      <input id="pw-old" type="password" autocomplete="current-password" required>
+      <label for="pw-new">新密码（至少 8 位）</label>
+      <input id="pw-new" type="password" autocomplete="new-password" minlength="8" required>
+      <button type="submit">修改密码</button>
+    </form>
+  </div>
+
+  <!-- 我的任务 -->
+  <div class="card">
+    <h1>我的转存任务</h1>
+    <p class="meta">最近 50 条，点击查看任务详情。</p>
+    <ul class="tasklist" id="tasklist"><li><span class="t-title meta">加载中…</span></li></ul>
+  </div>
+
+  <p id="msg" class="msg"></p>
+</main>
+<script src="/static/js/common.js"></script>
+<script src="/static/js/panel.js"></script>
+</body>
+</html>

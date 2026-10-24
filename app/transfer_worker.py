@@ -21,7 +21,7 @@ import logging
 import re
 import time
 
-from . import config, db
+from . import config, db, settings
 from .tmdb import VideoMeta, fetch_meta
 from .matcher import MovieMatcher, JUNK_PATTERN, episode_of, parse
 from .providers.base import CloudFile, ProviderAuthError, ProviderError, ShareFile
@@ -128,9 +128,20 @@ class TransferWorker:
         elif task["status"] == "PROCESSING" and task["quark_task_id"]:
             await self._poll_and_finish(task)
 
+    def _cookie_for_task(self, task: dict) -> str | None:
+        """按任务归属取网盘 Cookie：用户任务用本人 Cookie（未绑定属永久错误），
+        旧版全局任务（user_id=''）回退服务端全局凭证。"""
+        uid = task.get("user_id") or ""
+        if uid:
+            cookie = db.load_user_cookie(self.db_path, uid)
+            if not cookie:
+                raise PermanentError("用户未绑定网盘 Cookie，请在控制面板绑定后重试")
+            return cookie
+        return db.load_cookie(self.db_path) or (config.QUARK_COOKIE or None)
+
     async def _submit(self, task: dict) -> None:
         """SUBMITTING：解析分享 → 选文件 → 防重 → 提交转存 → PROCESSING。"""
-        cookie = db.load_cookie(self.db_path) or (config.QUARK_COOKIE or None)
+        cookie = self._cookie_for_task(task)
         if not cookie:
             raise PermanentError("未绑定网盘账号，请访问 /setup 完成授权")
         provider = QuarkDriveProvider(cookie=cookie, db_path=self.db_path)
@@ -178,7 +189,8 @@ class TransferWorker:
                               "names": [t.path for t in tops][:20]}
 
             save = await provider.save_share_files(
-                pwd_id, stoken, chosen, to_pdir_fid=await self._target_dir(provider))
+                pwd_id, stoken, chosen,
+                to_pdir_fid=await self._target_dir(provider, task))
             # save 响应内嵌的 top_fids 是轮询响应缺失时的兜底（实测出现过 null）
             db.set_task_fields(self.db_path, task["id"],
                                quark_task_id=save["task_id"],
@@ -197,7 +209,7 @@ class TransferWorker:
 
     async def _poll_and_finish(self, task: dict) -> None:
         """PROCESSING：轮询夸克任务直至成功/失败/超时。"""
-        cookie = db.load_cookie(self.db_path) or (config.QUARK_COOKIE or None)
+        cookie = self._cookie_for_task(task)
         if not cookie:
             raise PermanentError("未绑定网盘账号，请访问 /setup 完成授权")
         provider = QuarkDriveProvider(cookie=cookie, db_path=self.db_path)
@@ -272,7 +284,7 @@ class TransferWorker:
             return None
         cloud = [CloudFile(fid=e.fid, name=e.name, size=e.size, is_dir=False)
                  for e in videos]
-        best = MovieMatcher(config.MATCH_THRESHOLD).best(
+        best = MovieMatcher(settings.get("MATCH_THRESHOLD")).best(
             cloud, meta, task["season"], task["episode"])
         if best is not None:
             return next(e for e in videos if e.fid == best.file.fid)
@@ -308,11 +320,18 @@ class TransferWorker:
                 return f.fid
         return None
 
-    async def _target_dir(self, provider: QuarkDriveProvider) -> str:
-        """解析转存目标目录 fid（GODDAMNCOOL）；未配置目录名则转存到根目录。"""
-        if not config.TRANSFER_DIR:
+    async def _target_dir(self, provider: QuarkDriveProvider, task: dict) -> str:
+        """解析转存目标目录 fid：任务归属用户自定义的保存目录优先，
+        否则用服务器默认目录（管理员可在线修改）；均未配置则存网盘根目录。"""
+        uid = task.get("user_id") or ""
+        if uid:
+            user = db.get_user(self.db_path, uid) or {}
+            if user.get("save_dir"):
+                return await provider.find_or_create_dir(user["save_dir"])
+        transfer_dir = settings.get("TRANSFER_DIR")
+        if not transfer_dir:
             return "0"
-        return await provider.find_or_create_dir(config.TRANSFER_DIR)
+        return await provider.find_or_create_dir(transfer_dir)
 
     async def _locate_and_complete(self, provider: QuarkDriveProvider,
                                    task: dict, info: dict) -> None:

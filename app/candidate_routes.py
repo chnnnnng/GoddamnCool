@@ -1,25 +1,29 @@
 """搜索资源页与转存任务 API（前后端分离）。
 
 页面为 web/ 下静态文件（search.html / task.html），本模块只提供 JSON API
-与页面路由；所有 /api/* 接口均要求 X-Admin-Token 头等于 ADMIN_TOKEN
-（需求第 10 条），token 由前端保存于 localStorage，不进 URL、不落日志。
+与页面路由；所有 /api/* 接口要求登录（X-Session-Token 会话或旧版
+X-Admin-Token 全局管理令牌）。
 
 两种搜索模式（/search 页面按 URL 参数自动区分）：
 - Stremio 锚定模式：/search?vtype=movie&id=tt...（带影片，自动搜 TMDB 双语名，
   转存任务锚定影片，完成后 Stream 自动命中）；
 - 独立搜索模式：/search（仅手动关键词 + 网盘类型筛选，转存为 share-only 任务）。
 
+多用户隔离（阶段 8）：
+- 搜索/inspect/转存一律使用登录用户自己绑定的网盘 Cookie 与 TMDB key；
+- Lite 用户每日搜索有配额（LITE_DAILY_SEARCH_LIMIT），Pro/管理员不限；
+- 转存任务按用户隔离，任务详情仅本人与管理员可见。
+
 安全要点：
 - 第三方候选标题在前端一律 textContent 渲染，防存储型 XSS；
 - 确认转存时服务端校验分享链接格式（仅夸克官方分享域，防 SSRF/任意 URL）；
 - 任务 ID 为 uuid4 hex，防猜测遍历；影片标题以服务端 TMDB 结果为准。
 """
-import hmac
-
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
-from . import config, db
+from . import config, db, settings
+from .auth import require_user
 from .tmdb import fetch_meta
 from .providers.search import SHARE_URL_RE
 from .candidate_service import CandidateService
@@ -42,11 +46,6 @@ _STATUS_TEXT = {
 KNOWN_DISKS = ("quark", "uc", "baidu", "aliyun", "xunlei", "115", "123", "tianyi")
 
 
-def _check_token(request: Request) -> bool:
-    token = request.headers.get("X-Admin-Token", "")
-    return bool(config.ADMIN_TOKEN) and hmac.compare_digest(token, config.ADMIN_TOKEN)
-
-
 def _parse_disks(raw: str) -> list[str] | None:
     """disks 参数解析（与 Provider 语义对齐）：
     空 → None（默认仅夸克）；"all" → []（不限类型搜全部）；逗号分隔 → 校验后的列表。"""
@@ -60,6 +59,18 @@ def _parse_disks(raw: str) -> list[str] | None:
     if unknown or not disks:
         raise ValueError(f"不支持的网盘类型: {','.join(unknown)}")
     return disks
+
+
+def _unlimited(user: dict) -> bool:
+    """该用户是否不受每日搜索配额限制。"""
+    return (user["legacy"] or user["role"] == "admin" or user["tier"] == "pro")
+
+
+def _user_cookie(user: dict) -> str | None:
+    """取用户自己的网盘 Cookie；legacy 虚拟用户返回 None（由调用方回退全局）。"""
+    if user["legacy"]:
+        return None
+    return db.load_user_cookie(config.DB_PATH, user["id"])
 
 
 @router.get("/search")
@@ -76,14 +87,23 @@ async def candidates_page():
 @router.get("/api/candidates/search")
 async def candidates_search(request: Request, vtype: str = "movie", id: str = "",
                             kw: str = "", disks: str = ""):
-    if not _check_token(request):
-        return JSONResponse({"detail": "未授权"}, status_code=401)
+    user, err = require_user(request)
+    if err:
+        return err
     try:
         disk_list = _parse_disks(disks)
     except ValueError as e:
         return JSONResponse({"detail": str(e)}, status_code=400)
     if not id and not kw.strip():
         return JSONResponse({"detail": "请输入搜索关键词"}, status_code=400)
+    # Lite 每日配额：参数校验通过后计次（无论结果成败），超限 429 拒绝
+    if not _unlimited(user):
+        limit = settings.get("LITE_DAILY_SEARCH_LIMIT")
+        if db.get_search_count(config.DB_PATH, user["id"]) >= limit:
+            return JSONResponse(
+                {"detail": f"今日搜索次数已用完（{limit}/{limit}），升级 Pro 解除限制"},
+                status_code=429)
+        db.incr_search_count(config.DB_PATH, user["id"])
     meta, cands, errors, keyword = await candidate_service.search(
         vtype, id, keyword=kw, disks=disk_list)
     if id and meta is None:  # 锚定模式影片元数据失败（独立搜索 meta 恒为 null）
@@ -105,8 +125,9 @@ async def candidates_search(request: Request, vtype: str = "movie", id: str = ""
 
 @router.post("/api/candidates/confirm")
 async def candidates_confirm(request: Request):
-    if not _check_token(request):
-        return JSONResponse({"detail": "未授权"}, status_code=401)
+    user, err = require_user(request)
+    if err:
+        return err
     try:
         body = await request.json()
     except Exception:
@@ -136,7 +157,7 @@ async def candidates_confirm(request: Request):
         if not picks or any(len(f) > 64 for f in picks):
             return JSONResponse({"detail": "fids 列表无效"}, status_code=400)
     if video_id:
-        # Stremio 锚定模式：季集来自影片 ID，标题以 TMDB 为准
+        # Stremio 锚定模式：季集来自影片 ID，标题以 TMDB 为准（key 管理员统一配置）
         imdb_id, season, episode = parse_video_id(video_id)
         meta = await fetch_meta(imdb_id, vtype, candidate_service.db_path)
         if meta is None or not meta.title:
@@ -156,6 +177,18 @@ async def candidates_confirm(request: Request):
     # whole（转存完整剧集）：任务不锚定季集，整包落盘；
     # picks（转存所选剧集，可多选）：任务不锚定季集，按 fid 列表转存；
     # episode 仅转存所选单集
+    # Lite 每日转存配额：仅对"新任务"校验（幂等复用既有活跃任务不消耗次数）
+    active = db.find_active_task(
+        config.DB_PATH, share_url=share_url, imdb_id=imdb_id,
+        season=None if mode in ("whole", "picks") else season,
+        episode=None if mode in ("whole", "picks") else episode,
+        picks=picks, user_id=user["id"])
+    if active is None and not _unlimited(user):
+        tlimit = settings.get("LITE_DAILY_TRANSFER_LIMIT")
+        if db.get_transfer_count(config.DB_PATH, user["id"]) >= tlimit:
+            return JSONResponse(
+                {"detail": f"今日转存次数已用完（{tlimit}/{tlimit}），升级 Pro 解除限制"},
+                status_code=429)
     task, created = db.create_task(
         config.DB_PATH, vtype=vtype, imdb_id=imdb_id,
         season=None if mode in ("whole", "picks") else season,
@@ -165,8 +198,10 @@ async def candidates_confirm(request: Request):
         share_url=share_url,
         passcode=(body.get("passcode") or "")[:32],
         source=(body.get("source") or "")[:100],
-        mode=mode, picks=picks,
+        mode=mode, picks=picks, user_id=user["id"],
     )
+    if created and not _unlimited(user):
+        db.incr_transfer_count(config.DB_PATH, user["id"])
     return {"task_id": task["id"], "created": created, "status": task["status"]}
 
 
@@ -175,8 +210,9 @@ async def candidates_inspect(request: Request):
     """解析分享链接内容清单与文件规格（大小/清晰度/音轨/字幕/季集结构）。
 
     实时查询夸克分享目录树并解析文件名规格，供候选详情展示与转存选择。"""
-    if not _check_token(request):
-        return JSONResponse({"detail": "未授权"}, status_code=401)
+    user, err = require_user(request)
+    if err:
+        return err
     try:
         body = await request.json()
     except Exception:
@@ -185,8 +221,14 @@ async def candidates_inspect(request: Request):
     if not SHARE_URL_RE.match(url):
         return JSONResponse({"detail": "分享链接无效（仅支持 pan.quark.cn 分享链接）"},
                             status_code=400)
+    # 解析分享目录需要登录网盘：一律使用本人 Cookie（legacy 回退全局凭证）
+    cookie = _user_cookie(user)
+    if not user["legacy"] and not cookie:
+        return JSONResponse({"detail": "请先在控制面板绑定网盘 Cookie"},
+                            status_code=400)
     try:
-        return await candidate_service.inspect_share(url, (body.get("passcode") or "")[:32])
+        return await candidate_service.inspect_share(
+            url, (body.get("passcode") or "")[:32], cookie=cookie)
     except Exception as e:
         return JSONResponse({"detail": f"分享解析失败: {e}"}, status_code=400)
 
@@ -196,8 +238,9 @@ async def candidates_verify(request: Request):
     """批量检测候选分享链接存活状态（代理 PanSou /api/check/links）。
 
     前端列出候选后逐个调用本接口标注存活状态；非法链接直接跳过不送检。"""
-    if not _check_token(request):
-        return JSONResponse({"detail": "未授权"}, status_code=401)
+    _, err = require_user(request)
+    if err:
+        return err
     try:
         body = await request.json()
     except Exception:
@@ -225,10 +268,15 @@ async def task_page(task_id: str):
 
 @router.get("/api/task/{task_id}")
 async def task_api(request: Request, task_id: str):
-    if not _check_token(request):
-        return JSONResponse({"detail": "未授权"}, status_code=401)
+    user, err = require_user(request)
+    if err:
+        return err
     task = db.get_task(config.DB_PATH, task_id)
     if task is None:
+        return JSONResponse({"detail": "任务不存在"}, status_code=404)
+    # 归属校验（防遍历）：仅本人与管理员可见；legacy 全局令牌可见全部
+    if (not user["legacy"] and user["role"] != "admin"
+            and task["user_id"] != user["id"]):
         return JSONResponse({"detail": "任务不存在"}, status_code=404)
     task["status_text"] = _STATUS_TEXT.get(task["status"], task["status"])
     task["save_dir"] = config.TRANSFER_DIR  # 落盘目录名（任务页展示用）

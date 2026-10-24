@@ -488,8 +488,8 @@ def patch_inspect(monkeypatch, result=None, error=None):
     svc = CandidateService()
     calls = []
 
-    async def fake_inspect(share_url, passcode=""):
-        calls.append({"url": share_url, "passcode": passcode})
+    async def fake_inspect(share_url, passcode="", cookie=None):
+        calls.append({"url": share_url, "passcode": passcode, "cookie": cookie})
         if error:
             raise RuntimeError(error)
         return result or {"video_count": 1, "other_count": 0, "total_size": 1000,
@@ -519,7 +519,7 @@ def test_inspect_ok(monkeypatch):
                     json={"share_url": GOOD_URL, "passcode": "ax72"})
     assert r.status_code == 200
     assert r.json()["is_series"] is False
-    assert svc.inspect_calls == [{"url": GOOD_URL, "passcode": "ax72"}]
+    assert svc.inspect_calls == [{"url": GOOD_URL, "passcode": "ax72", "cookie": None}]
 
 
 def test_inspect_provider_error(monkeypatch):
@@ -597,7 +597,8 @@ async def test_inspect_share_no_cookie_raises(tmp_db, monkeypatch):
 
 # ---------- 页面骨架（前后端分离：页面为 web/ 静态文件，后端提供静态服务） ----------
 
-PAGES = ("/setup", "/search", "/candidates", "/task/some-id")
+PAGES = ("/setup", "/search", "/candidates", "/task/some-id",
+         "/login", "/panel", "/admin")
 
 
 def test_pages_render():
@@ -630,7 +631,7 @@ def test_pages_reference_existing_static_assets():
 def test_static_js_contains_no_python_artifacts():
     """回归：JS 独立成文件后不应残留 Python f-string 花括号等占位符。"""
     js = client.get("/static/js/common.js").text
-    assert "TOKEN_KEY" in js and "function api" in js
+    assert "SESSION_KEY" in js and "function api" in js
     for page_path in PAGES:
         page = client.get(page_path).text
         assert "{title}" not in page  # 服务端模板占位符不应出现在静态页

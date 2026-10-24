@@ -5,11 +5,14 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from . import config, db
+from . import config, db, settings
+from .admin_routes import router as admin_router
+from .auth_routes import router as auth_router
 from .candidate_routes import router as candidate_router
 from .proxy import router as proxy_router
 from .stremio_routes import router as stremio_router
 from .transfer_worker import TransferWorker
+from .user_routes import router as user_router
 from .web_routes import router as web_router
 
 logging.basicConfig(
@@ -37,6 +40,9 @@ class NoStoreStaticFiles(StaticFiles):
 app.include_router(stremio_router)
 app.include_router(web_router)
 app.include_router(candidate_router)
+app.include_router(auth_router)
+app.include_router(user_router)
+app.include_router(admin_router)
 app.include_router(proxy_router)
 # 前端静态资源（前后端分离）：HTML 页面由路由以 FileResponse 提供（no-store），
 # CSS/JS 经 /static 挂载提供。
@@ -51,6 +57,7 @@ async def startup():
     if errors:
         raise RuntimeError("配置缺失: " + "; ".join(errors))
     db.init(config.DB_PATH, config.SECRET_KEY)
+    settings.load(config.DB_PATH)  # 运行时可编辑配置（DB 覆盖值）入缓存
     if config.QUARK_COOKIE and not db.load_cookie(config.DB_PATH):
         db.save_cookie(config.DB_PATH, config.QUARK_COOKIE)
     worker.start()  # 转存 Worker：扫描 PENDING 并恢复重启前的未完成任务

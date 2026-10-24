@@ -13,7 +13,7 @@ import re
 from datetime import datetime
 from difflib import SequenceMatcher
 
-from . import config, db
+from . import config, db, settings
 from .tmdb import VideoMeta, fetch_meta
 from .stream_service import parse_video_id
 from .matcher import JUNK_PATTERN, VIDEO_EXTS, episode_of, parse, parse_file_spec
@@ -99,8 +99,8 @@ class CandidateService:
 
     def _providers(self) -> list[ResourceSearchProvider]:
         providers: list[ResourceSearchProvider] = []
-        if config.PANSOU_BASE_URL:
-            providers.append(PanSouProvider(config.PANSOU_BASE_URL,
+        if settings.get("PANSOU_BASE_URL"):
+            providers.append(PanSouProvider(settings.get("PANSOU_BASE_URL"),
                                             timeout=config.SEARCH_TIMEOUT))
         return providers
 
@@ -113,6 +113,7 @@ class CandidateService:
         TMDB 外语名（归一化去重），影片同时有中文名与外语名时两个名字各搜一次
         并按链接去重合并；video_id 为空（独立搜索模式）：跳过 TMDB，仅按手动
         关键词搜索一次。
+        TMDB key 由管理员统一配置（settings），普通用户不可见。
         disks: 网盘类型列表；None → 默认仅夸克，空列表 → 全部网盘（透传 Provider）。
         来源级失败不中断整体搜索。候选合并后统一对夸克链接做存活检测（PanSou
         /api/check/links），并对"有效"候选解析分享内容：详情填充到 detail
@@ -148,7 +149,7 @@ class CandidateService:
             return meta_c, cands_c, "", cached["kw"]
         tasks = [(p, k) for p in providers for k in keywords]
         results = await asyncio.gather(
-            *(p.search(k, limit=config.SEARCH_LIMIT, cloud_types=disks)
+            *(p.search(k, limit=settings.get("SEARCH_LIMIT"), cloud_types=disks)
               for p, k in tasks),
             return_exceptions=True,
         )
@@ -200,7 +201,7 @@ class CandidateService:
                           "videos": meta.videos} if meta else None),
                 "candidates": [self._cand_dict(c) for c in merged],
                 "kw": kw,
-            }, config.SEARCH_CACHE_TTL)
+            }, settings.get("SEARCH_CACHE_TTL"))
         return meta, merged, "；".join(errors), kw
 
     @staticmethod
@@ -225,7 +226,7 @@ class CandidateService:
         - detail 填充到候选（搜索结果页直显季集/规格摘要）；
         - 内容中无视频文件 → 标记 bad（"内容无视频文件"），排挤出"有效"；
         - 单条解析失败不影响整体（保持原存活状态）。"""
-        targets = [c for c in quark if c.alive_state == "ok"][:config.INSPECT_LIMIT]
+        targets = [c for c in quark if c.alive_state == "ok"][:settings.get("INSPECT_LIMIT")]
         if not targets:
             return
         sem = asyncio.Semaphore(4)
@@ -252,7 +253,7 @@ class CandidateService:
         """
         if not items:
             return []
-        provider = PanSouProvider(config.PANSOU_BASE_URL,
+        provider = PanSouProvider(settings.get("PANSOU_BASE_URL"),
                                   timeout=config.SEARCH_TIMEOUT)
         payload = []
         for it in items:
@@ -277,9 +278,11 @@ class CandidateService:
                         "summary": r.get("summary") or "未获取检测结果"})
         return out
 
-    async def inspect_share(self, share_url: str, passcode: str = "") -> dict:
+    async def inspect_share(self, share_url: str, passcode: str = "",
+                            cookie: str | None = None) -> dict:
         """解析分享链接的内容清单与文件规格（阶段 5，实时查询夸克）。
 
+        cookie: 调用者自己的网盘 Cookie（多用户隔离）；缺省回退服务端全局凭证。
         返回 {"video_count", "other_count", "total_size", "total_size_h",
         "is_series", "seasons", "files"}；files 每项含 name/path/fid/size/
         size_h/season/episode/spec（清晰度/编码/音轨/字幕/语言，来自文件名标注）。
@@ -288,7 +291,7 @@ class CandidateService:
         cache_key = f"inspect:{share_url}|{passcode}"
         if (cached := db.get_cache(self.db_path, cache_key)) is not None:
             return cached
-        cookie = db.load_cookie(self.db_path) or (config.QUARK_COOKIE or None)
+        cookie = cookie or db.load_cookie(self.db_path) or (config.QUARK_COOKIE or None)
         if not cookie:
             raise ProviderError("未绑定网盘账号，请访问 /setup 完成授权")
         provider = QuarkDriveProvider(cookie=cookie, db_path=self.db_path)
@@ -335,5 +338,5 @@ class CandidateService:
                         for s, v in sorted(seasons.items())],
             "files": files[:80],  # 缓存/展示上限，防超大分享撑爆响应
         }
-        db.set_cache(self.db_path, cache_key, data, config.SEARCH_CACHE_TTL)
+        db.set_cache(self.db_path, cache_key, data, settings.get("SEARCH_CACHE_TTL"))
         return data

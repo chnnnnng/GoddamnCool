@@ -2,7 +2,7 @@
 import json
 import logging
 
-from . import config, db
+from . import config, db, settings
 from .tmdb import VideoMeta, fetch_meta
 from .matcher import MovieMatcher, episode_of, parse
 from .providers.base import CloudDriveProvider, CloudFile, ProviderAuthError, ProviderError
@@ -30,9 +30,12 @@ def parse_video_id(video_id: str) -> tuple[str, int | None, int | None]:
 
 
 class StreamService:
-    def __init__(self, db_path: str = config.DB_PATH, threshold: float = config.MATCH_THRESHOLD):
+    def __init__(self, db_path: str = config.DB_PATH, threshold: float | None = None):
         self.db_path = db_path
-        self.matcher = MovieMatcher(threshold=threshold)
+        # 匹配阈值支持管理员在线修改（settings），未显式传参时运行时读取
+        self.matcher = MovieMatcher(
+            threshold=settings.get("MATCH_THRESHOLD") if threshold is None
+            else threshold)
 
     # ---- Provider 管理 ----
 
@@ -44,21 +47,29 @@ class StreamService:
 
     # ---- 主流程 ----
 
-    async def get_streams(self, vtype: str, video_id: str) -> tuple[list[dict], str]:
-        """返回 (stremio stream 列表, 状态说明)。任何失败均返回空列表不抛出。"""
-        cookie = self.load_cookie()
+    async def get_streams(self, vtype: str, video_id: str,
+                          cookie: str | None = None,
+                          user_id: str | None = None) -> tuple[list[dict], str]:
+        """返回 (stremio stream 列表, 状态说明)。任何失败均返回列表不抛出。
+
+        cookie: 调用者自己的网盘 Cookie；None → 回退服务端全局凭证（legacy）。
+        user_id: 任务归属过滤（None 不过滤兼容旧调用；'' 仅全局任务）。
+        TMDB key 由管理员统一配置（settings）。
+        """
+        cookie = cookie or self.load_cookie()
         if not cookie:
-            return [], "未绑定网盘账号，请访问 /setup 完成授权"
+            return [], "未绑定网盘账号，请访问 /panel 绑定网盘 Cookie"
         imdb_id, season, episode = parse_video_id(video_id)
         meta = await fetch_meta(imdb_id, vtype, self.db_path)
         if meta is None or not meta.title:
             return [], f"TMDB 未收录 {video_id}"
         provider = self.create_provider(cookie)
         try:
-            return await self._streams_for(provider, meta, vtype, video_id, season, episode)
+            return await self._streams_for(provider, meta, vtype, video_id,
+                                           season, episode, user_id)
         except ProviderAuthError as e:
             log.error("网盘登录态失效: %s", e)
-            return [], "网盘登录态失效，请重新在 /setup 授权"
+            return [], "网盘登录态失效，请在控制面板重新绑定 Cookie"
         except ProviderError as e:
             log.error("网盘接口错误: %s", e)
             return [], f"网盘接口错误: {e}"
@@ -70,17 +81,19 @@ class StreamService:
 
     async def _streams_for(self, provider: CloudDriveProvider, meta: VideoMeta,
                            vtype: str, video_id: str,
-                           season: int | None, episode: int | None) -> tuple[list[dict], str]:
+                           season: int | None, episode: int | None,
+                           user_id: str | None = None) -> tuple[list[dict], str]:
         imdb_id, _, _ = parse_video_id(video_id)
-        files = await self._search_all(provider, meta, video_id)
+        files = await self._search_all(provider, meta, video_id, user_id)
         if not files:
             reason = f"网盘未搜索到“{meta.title}”"
-            return self._with_guidance(vtype, video_id, reason), reason
+            return self._with_guidance(vtype, video_id, reason, user_id), reason
         best = self.matcher.best(files, meta, season, episode)
         if best is None:
             # 转存任务已精准定位的文件可直接信任（Worker 选择时有分享结构上下文，
             # 能覆盖裸集数文件名 06.mkv 这类标题匹配必失败的场景）
-            located = self._task_located_file(files, vtype, imdb_id, season, episode)
+            located = self._task_located_file(files, vtype, imdb_id, season,
+                                              episode, user_id)
             if located is not None:
                 resource = await provider.get_play_resource(located)
                 return [self._to_stream(resource, "转存任务已定位该文件")], \
@@ -88,18 +101,19 @@ class StreamService:
             cands = self.matcher.match(files, meta, season, episode)
             detail = "；".join(f"{c.file.name}({c.score})" for c in cands[:3]) or "无候选"
             reason = f"置信度不足，暂不返回流（候选: {detail}）"
-            return self._with_guidance(vtype, video_id, reason), reason
+            return self._with_guidance(vtype, video_id, reason, user_id), reason
         resource = await provider.get_play_resource(best.file)
         return [self._to_stream(resource, best.reason)], best.reason
 
     def _task_located_file(self, files: list[CloudFile], vtype: str, imdb_id: str,
-                           season: int | None, episode: int | None) -> CloudFile | None:
+                           season: int | None, episode: int | None,
+                           user_id: str | None = None) -> CloudFile | None:
         """在搜索结果里找转存任务明确指定的目标文件（target_fid / result_json.name /
         整包任务落盘文件清单按季集匹配）。"""
         by_fid = {f.fid: f for f in files}
         by_name = {f.name: f for f in files}
         for t in db.get_tasks_for_video(self.db_path, vtype, imdb_id,
-                                        season, episode):
+                                        season, episode, user_id=user_id):
             if t["status"] != "COMPLETED":
                 continue
             if t["target_fid"] and t["target_fid"] in by_fid:
@@ -124,7 +138,7 @@ class StreamService:
         return None
 
     async def _search_all(self, provider: CloudDriveProvider, meta: VideoMeta,
-                          video_id: str) -> list[CloudFile]:
+                          video_id: str, user_id: str | None = None) -> list[CloudFile]:
         """多关键词搜索网盘并按 fid 去重：TMDB 双语名（跨语言）
         + 已完成转存任务的定位文件名（转存文件名常与标题语言不一致）。"""
         imdb_id, season, episode = parse_video_id(video_id)
@@ -132,7 +146,7 @@ class StreamService:
         keywords = [meta.title, meta.name_zh, meta.name_en]
         for t in db.get_tasks_for_video(self.db_path, vtype=meta.type,
                                         imdb_id=imdb_id, season=season,
-                                        episode=episode):
+                                        episode=episode, user_id=user_id):
             if t["status"] != "COMPLETED" or not t["result_json"]:
                 continue
             try:
@@ -158,7 +172,8 @@ class StreamService:
                 log.warning("网盘搜索“%s”失败: %s", kw, e)
         return list(seen.values())
 
-    def _with_guidance(self, vtype: str, video_id: str, reason: str) -> list[dict]:
+    def _with_guidance(self, vtype: str, video_id: str, reason: str,
+                       user_id: str | None = None) -> list[dict]:
         """未命中时附加 externalUrl 引导流（Stremio 标准字段，点击在浏览器打开），
         不伪造播放流。已有转存任务时指向任务页并展示实时进度（阶段 4 播放闭环：
         转存完成后用户在 Stremio 重新刷新片源即可命中播放）。"""
@@ -167,7 +182,8 @@ class StreamService:
         url = f"{config.BASE_URL}/search?vtype={vtype}&id={video_id}"
         extra = "。点击打开候选资源页，选择资源后转存到网盘。"
         imdb_id, season, episode = parse_video_id(video_id)
-        tasks = db.get_tasks_for_video(self.db_path, vtype, imdb_id, season, episode)
+        tasks = db.get_tasks_for_video(self.db_path, vtype, imdb_id, season,
+                                       episode, user_id=user_id)
         if tasks:
             t = tasks[0]
             url = f"{config.BASE_URL}/task/{t['id']}"

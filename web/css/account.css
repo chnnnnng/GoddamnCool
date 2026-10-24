@@ -1,0 +1,49 @@
+/* 登录 / 控制面板 / 管理后台三页共用样式（配合 common.css 主题变量）。 */
+
+/* Tab 切换（登录页） */
+.tabs { display: flex; gap: 8px; margin-bottom: 6px; }
+.tabs .tab { flex: 1; background: var(--card2); color: var(--dim);
+             border: 1px solid var(--line); font-weight: 500; }
+.tabs .tab.active { background: var(--accent-strong); color: var(--accent-ink);
+                    border-color: var(--accent-strong); font-weight: 600; }
+
+/* 状态/角色徽章 */
+.badge { display: inline-block; padding: 3px 10px; border-radius: 2px;
+         font-size: .8rem; font-weight: 600; margin-left: 6px;
+         background: var(--dim-bg); color: var(--dim-fg); vertical-align: 2px; }
+.badge.ok { background: var(--ok-bg); color: var(--ok-fg); }
+.badge.warn { background: var(--warn-bg); color: var(--warn-fg); }
+.badge.err { background: var(--err-bg); color: var(--err-fg); }
+
+/* 键值行（面板只读信息） */
+.kv { display: grid; grid-template-columns: 88px 1fr; row-gap: 6px;
+      font-size: .9rem; margin: 10px 0; }
+.kv dt { color: var(--dim); }
+.kv dd { margin: 0; overflow-wrap: anywhere; }
+
+/* 数据表（管理页） */
+.tablewrap { overflow-x: auto; margin-top: 10px; }
+table { border-collapse: collapse; width: 100%; font-size: .88rem; }
+th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line);
+         white-space: nowrap; }
+th { color: var(--dim); font-weight: 500; font-size: .8rem; }
+td.wrap { white-space: normal; overflow-wrap: anywhere; }
+td button { min-height: 34px; padding: 4px 10px; font-size: .8rem;
+            margin: 2px 4px 2px 0; }
+td button.danger { background: var(--err-bg); color: var(--err-fg); }
+
+/* 行内表单组 */
+.row { display: flex; gap: 8px; align-items: stretch; flex-wrap: wrap; }
+.row input { flex: 1; min-width: 180px; }
+.row button { white-space: nowrap; }
+
+/* 我的任务列表 */
+.tasklist { list-style: none; margin: 10px 0 0; padding: 0; }
+.tasklist li { display: flex; gap: 10px; align-items: center;
+               padding: 9px 6px; border-bottom: 1px solid var(--line); }
+.tasklist li:last-child { border-bottom: 0; }
+.tasklist .t-title { flex: 1; overflow: hidden; text-overflow: ellipsis;
+                     white-space: nowrap; }
+.tasklist a { color: var(--text); text-decoration: none; }
+.tasklist a:hover { color: var(--accent); }
+.tasklist .t-time { color: var(--dim); font-size: .8rem; white-space: nowrap; }

@@ -13,7 +13,7 @@ import time
 
 import httpx
 
-from . import config, db
+from . import config, db, settings
 
 log = logging.getLogger(__name__)
 
@@ -114,17 +114,21 @@ async def _fetch_ip(client: httpx.AsyncClient) -> str:
 
 async def fetch_meta(imdb_id: str, vtype: str, db_path: str | None = None,
                      transport: httpx.AsyncTransport | None = None) -> VideoMeta | None:
-    """查询 TMDB（优先缓存）。未收录/网络失败返回 None（调用方降级处理）。"""
+    """查询 TMDB（优先缓存）。未收录/网络失败返回 None（调用方降级处理）。
+
+    API Key 由管理员在 /admin 配置页填写（settings），缺省回退服务端
+    环境变量/根目录 TMDB_API_KEY 文件。"""
     path = db_path or config.DB_PATH
     cached = db.get_tmdb_meta(path, imdb_id, vtype, ttl=config.TMDB_META_TTL)
     if cached:
         return VideoMeta(cached)
-    if not config.TMDB_API_KEY:
-        log.error("TMDB_API_KEY 未配置（项目根目录 TMDB_API_KEY 文件或环境变量）")
+    key = settings.get("TMDB_API_KEY")
+    if not key:
+        log.error("TMDB_API_KEY 未配置（请管理员在 /admin 配置页填写，或设置环境变量）")
         return None
     try:
         async with httpx.AsyncClient(timeout=10, transport=transport,
-                                     params={"api_key": config.TMDB_API_KEY}) as client:
+                                     params={"api_key": key}) as client:
             zh, en = await asyncio.gather(
                 _find(client, imdb_id, _LANG_ZH),
                 _find(client, imdb_id, _LANG_EN),

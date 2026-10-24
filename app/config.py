@@ -65,6 +65,10 @@ CHECKTMDB_HOSTS_URL = ("https://cdn.jsdelivr.net/gh/cnwikee/CheckTMDB@main/"
 PANSOU_BASE_URL: str = os.environ.get("PANSOU_BASE_URL", "https://so.252035.xyz").rstrip("/")
 SEARCH_TIMEOUT: float = float(os.environ.get("SEARCH_TIMEOUT", "25"))
 SEARCH_LIMIT: int = int(os.environ.get("SEARCH_LIMIT", "30"))
+# Lite 用户每日搜索次数上限（Pro/管理员不限；管理员可在 /admin 页面在线修改）
+LITE_DAILY_SEARCH_LIMIT: int = int(os.environ.get("LITE_DAILY_SEARCH_LIMIT", "50"))
+# Lite 用户每日转存次数上限（Pro/管理员不限；管理员可在 /admin 页面在线修改）
+LITE_DAILY_TRANSFER_LIMIT: int = int(os.environ.get("LITE_DAILY_TRANSFER_LIMIT", "10"))
 # 搜索结果与分享详情缓存有效期（秒，默认 1 天）；0 关闭缓存
 SEARCH_CACHE_TTL: float = float(os.environ.get("SEARCH_CACHE_TTL", str(86400)))
 # 搜索后对"有效"候选做内容解析（详情直显 + 无视频排除）的最大条数
