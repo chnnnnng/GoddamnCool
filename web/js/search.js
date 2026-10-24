@@ -440,6 +440,10 @@ footEl.textContent = '本工具仅聚合第三方公开的网盘分享链接，�
 /* ---- 初始化 ---- */
 buildChips();
 btnEl.onclick = dosearch;
+
+/* ---- 顶部导航 ---- */
+var logoutBtn = document.getElementById('btn-logout');
+if (logoutBtn) logoutBtn.addEventListener('click', function () { logout(); });
 kwEl.addEventListener('keydown', (e) => { if (e.key === 'Enter') dosearch(); });
 if (anchored) dosearch();
 else kwEl.focus();

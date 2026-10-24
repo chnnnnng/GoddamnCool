@@ -31,6 +31,20 @@ body {
   margin: 0; background: var(--bg); color: var(--text);
   font-size: 1rem; line-height: 1.55;
 }
+
+/* 全局品牌渐变背景：多层绿色光晕（首页同款），fixed 层绘制、不遮挡内容 */
+body::before {
+  content: ''; position: fixed; inset: 0; z-index: -1; pointer-events: none;
+  background:
+    radial-gradient(ellipse 75% 45% at 50% -8%,
+        rgba(52, 216, 115, .15), transparent 62%),
+    radial-gradient(ellipse 50% 38% at 88% 8%,
+        rgba(110, 231, 160, .08), transparent 65%),
+    radial-gradient(ellipse 55% 42% at 4% 85%,
+        rgba(31, 174, 90, .09), transparent 70%),
+    radial-gradient(ellipse 42% 30% at 55% 112%,
+        rgba(35, 185, 94, .05), transparent 72%);
+}
 a { color: var(--accent); }
 code { background: var(--card2); padding: 2px 6px; border-radius: 2px; font-size: .9em; }
 

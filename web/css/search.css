@@ -9,10 +9,11 @@
 }
 
 /* ---- 搜索框 ---- */
+/* 顶部导航与卡片间距对齐其他页面（panel/task 的 main>.card margin 18px） */
 .searchbar {
   display: flex;
   gap: 10px;
-  margin: 4px 0 14px;
+  margin: 14px 0 14px;
 }
 .searchbar input {
   flex: 1;

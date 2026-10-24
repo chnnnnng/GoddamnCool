@@ -6,16 +6,12 @@
 <title>{{APP_NAME}} · 夸克网盘 × Stremio 影视库</title>
 <link rel="stylesheet" href="/static/css/common.css">
 <style>
-  /* 首页独立样式：深色渐变 hero + 功能卡片，无外部图片依赖 */
+  /* 首页独立样式：全局渐变背景由 common.css body::before 提供，此处仅布局 */
   body { margin: 0; font-family: var(--font, system-ui, sans-serif);
-         color: var(--text, #e8ebf0); background: #0f1216; }
+         color: var(--text, #e8ebf0); }
   .hero { min-height: 78vh; display: flex; flex-direction: column;
           align-items: center; justify-content: center; text-align: center;
-          padding: 48px 20px 32px;
-          background: radial-gradient(ellipse 90% 60% at 50% -10%,
-              rgba(52, 216, 115, .16), transparent 60%),
-            radial-gradient(ellipse 60% 45% at 85% 20%,
-              rgba(74, 222, 128, .10), transparent 65%), #0f1216; }
+          padding: 48px 20px 32px; }
   .logo { font-size: 2.6rem; font-weight: 800; letter-spacing: .04em;
           margin: 0 0 14px;
           background: linear-gradient(92deg, #6ee7a0 0%, #34d873 55%, #1fae5a 100%);
