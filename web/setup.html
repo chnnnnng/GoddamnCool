@@ -4,10 +4,15 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>夸克网盘 · 账号绑定</title>
-<style>body { max-width: 640px; }</style>
 <link rel="stylesheet" href="/static/css/common.css">
 </head>
 <body>
+<header class="topbar">
+  <a class="brand" href="/search"><span class="dot"></span>夸克搜转</a>
+  <span class="spacer"></span>
+  <a class="button sec" href="/search">返回搜索</a>
+</header>
+<main style="max-width:640px;margin:0 auto;padding:6px 16px 48px">
 <div class="card">
   <h1>夸克网盘 · 账号绑定</h1>
   <p>本服务为<b>单用户自托管</b>。绑定后，Stremio 将使用您个人网盘内已保存的影视资源。</p>
@@ -27,7 +32,9 @@
   </form>
   <div id="msg" class="msg"></div>
 </div>
+</main>
 <script src="/static/js/common.js"></script>
+<script src="/static/js/spatial-nav.js"></script>
 <script src="/static/js/setup.js"></script>
 </body>
 </html>

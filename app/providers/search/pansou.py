@@ -3,15 +3,16 @@
 调用其公开搜索 API：
   POST {base_url}/api/search
   body: {"kw": "...", "res": "merge", "cloud_types": ["quark"]}
-返回 data.merged_by_type.quark[]，每项含 url/password/note/datetime/source。
+返回 data.merged_by_type.<disk_type>[]，每项含 url/password/note/datetime/source。
 
 实测要点（2026-10，公开实例 so.252035.xyz）：
 - GET 会被实例 nginx 302 后拒绝（400），必须用 POST；
 - 实例边缘节点不稳定：同一请求可能瞬时 400/502/ReadTimeout，需重试；
 - 插件异步搜索：关键词首次查询常返回 0 条，稍候重查即可命中其缓存，
   故空结果时自动补查一次；
-- 个别插件返回脏链接（share id 后拼接多余字符，如 ...dc7BY），故做严格
-  格式校验：https://pan.quark.cn/s/<10~20位小写字母数字>；
+- 夸克链接做严格格式校验：https://pan.quark.cn/s/<10~20位小写字母数字>
+  （个别插件返回脏链接，share id 后拼接多余字符）；非夸克网盘仅做宽松
+  http(s) URL 校验（不可转存，仅展示/跳转）；
 - datetime 可能为 Go 零值 "0001-01-01T00:00:00Z"，视为未知。
 """
 import asyncio
@@ -26,6 +27,8 @@ log = logging.getLogger(__name__)
 
 # 夸克分享链接格式（share id 实测为小写字母数字；含大写即视为脏数据）
 SHARE_URL_RE = re.compile(r"^https://pan\.quark\.cn/s/[0-9a-z]{10,20}$")
+# 非夸克网盘的宽松校验：仅要求 http(s) 链接（用于独立搜索的多网盘展示）
+LOOSE_URL_RE = re.compile(r"^https?://\S+$")
 
 _ZERO_TIME = "0001-01-01T00:00:00Z"
 
@@ -53,16 +56,19 @@ class PanSouProvider(ResourceSearchProvider):
             },
         )
 
-    async def search(self, keyword: str, limit: int = 20) -> list[SearchCandidate]:
+    async def search(self, keyword: str, limit: int = 20,
+                     cloud_types: list[str] | None = None) -> list[SearchCandidate]:
+        body = {"kw": keyword, "res": "merge"}
+        if cloud_types is None:
+            cloud_types = ["quark"]  # 默认仅搜夸克（可转存链路）
+        if cloud_types:
+            body["cloud_types"] = cloud_types
         last_err = ""
         for attempt in range(3):
             if attempt:
                 await asyncio.sleep(self._backoff * attempt)
             try:
-                resp = await self._client.post(
-                    f"{self._base}/api/search",
-                    json={"kw": keyword, "res": "merge", "cloud_types": ["quark"]},
-                )
+                resp = await self._client.post(f"{self._base}/api/search", json=body)
             except httpx.HTTPError as e:
                 last_err = f"PanSou 请求失败: {e}"
                 log.warning("PanSou 第 %d 次请求失败: %s", attempt + 1, e)
@@ -80,14 +86,21 @@ class PanSouProvider(ResourceSearchProvider):
                 last_err = f"PanSou 错误 code={data.get('code')}: {data.get('message')}"
                 continue
 
-            items = ((data.get("data") or {}).get("merged_by_type") or {}).get("quark") or []
+            merged = ((data.get("data") or {}).get("merged_by_type") or {})
+            items: list[tuple[str, dict]] = []
+            for disk_type, arr in merged.items():
+                if cloud_types and disk_type not in cloud_types:
+                    continue
+                for it in arr or []:
+                    items.append((disk_type, it))
             out = self._parse(items)
             if not out and attempt == 0:
                 # 插件异步搜索：首次常为空，稍候重查命中缓存
                 log.info("PanSou 首查无结果（%r），等待缓存后补查", keyword)
                 await asyncio.sleep(1.5)
                 continue
-            log.info("PanSou 搜索 %r: 原始 %d 条，有效 %d 条", keyword, len(items), len(out))
+            log.info("PanSou 搜索 %r（网盘 %s）: 原始 %d 条，有效 %d 条",
+                     keyword, ",".join(cloud_types) or "全部", len(items), len(out))
             return out[:limit]
         raise SearchError(last_err or "PanSou 无结果")
 
@@ -128,13 +141,21 @@ class PanSouProvider(ResourceSearchProvider):
             return results
         raise SearchError(last_err or "PanSou 检测失败")
 
-    def _parse(self, items: list) -> list[SearchCandidate]:
+    def _parse(self, items: list[tuple[str, dict]]) -> list[SearchCandidate]:
         out: list[SearchCandidate] = []
         seen: set[str] = set()
-        for it in items:
+        for disk_type, it in items:
             url = (it.get("url") or "").strip()
-            if url in seen or not SHARE_URL_RE.match(url):
-                continue  # 同链接去重；脏链接（拼接错误/非夸克）过滤
+            if url in seen:
+                continue  # 同链接去重
+            if disk_type == "quark" or "pan.quark.cn/s/" in url:
+                if not SHARE_URL_RE.match(url):
+                    continue  # 夸克：脏链接（拼接错误/非官方域）过滤
+                disk = "quark"
+            else:
+                if not LOOSE_URL_RE.match(url):
+                    continue  # 非夸克：仅宽松校验 http(s) 链接
+                disk = disk_type
             seen.add(url)
             published = it.get("datetime") or ""
             out.append(SearchCandidate(
@@ -144,6 +165,7 @@ class PanSouProvider(ResourceSearchProvider):
                 source=(it.get("source") or "").strip(),
                 published="" if published == _ZERO_TIME else published,
                 provider=self.name,
+                disk=disk,
             ))
         return out
 

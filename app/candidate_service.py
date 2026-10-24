@@ -47,16 +47,17 @@ def _season_of(note: str) -> int | None:
     return int(m.group(1) or m.group(2))
 
 
-def score_candidate(cand: SearchCandidate, meta: VideoMeta, season: int | None,
-                    keyword: str = "") -> float:
+def score_candidate(cand: SearchCandidate, meta: VideoMeta | None,
+                    season: int | None, keyword: str = "") -> float:
     """0~1 量级的匹配评分（仅用于排序展示）。
 
     相似度同时参考实际搜索关键词与 TMDB 原标题（跨语言场景下候选
-    资源标题可能与原标题语言不同，与关键词同语言时以关键词为准）。
+    资源标题可能与原标题语言不同，与关键词同语言时以关键词为准）；
+    独立搜索（无影片元数据）时仅按关键词评分。
     """
     note = _norm(cand.title)
     ref = max(
-        (_norm(x) for x in (keyword, meta.title) if x),
+        (_norm(x) for x in (keyword, meta.title if meta else "") if x),
         key=lambda t: SequenceMatcher(None, note, t).ratio() if note else 0.0,
         default="",
     )
@@ -74,7 +75,7 @@ def score_candidate(cand: SearchCandidate, meta: VideoMeta, season: int | None,
             score += 0.1
         elif cand_season is not None and cand_season != season:
             score -= 0.15  # 明确标注了其他季
-    if meta.year:
+    if meta and meta.year:
         years = {int(y) for y in _YEAR_RE.findall(cand.title)}
         if meta.year in years:
             score += 0.05
@@ -103,34 +104,41 @@ class CandidateService:
                                             timeout=config.SEARCH_TIMEOUT))
         return providers
 
-    async def search(self, vtype: str, video_id: str, keyword: str = "") \
+    async def search(self, vtype: str, video_id: str, keyword: str = "",
+                     disks: list[str] | None = None) \
             -> tuple[VideoMeta | None, list[SearchCandidate], str, str]:
         """返回 (影片元数据, 候选列表, 错误说明, 实际使用的关键词)。
 
-        关键词来源：手动指定 > TMDB 中文名 > TMDB 外语名（归一化去重，手动关键词
-        不做缓存）。影片同时有中文名与外语名时，两个名字各搜一次并按链接去重合并。
-        来源级失败不中断整体搜索。候选合并后统一做链接存活检测（PanSou
+        video_id 非空（Stremio 锚定模式）：关键词来源为 手动指定 > TMDB 中文名 >
+        TMDB 外语名（归一化去重），影片同时有中文名与外语名时两个名字各搜一次
+        并按链接去重合并；video_id 为空（独立搜索模式）：跳过 TMDB，仅按手动
+        关键词搜索一次。
+        disks: 网盘类型列表；None → 默认仅夸克，空列表 → 全部网盘（透传 Provider）。
+        来源级失败不中断整体搜索。候选合并后统一对夸克链接做存活检测（PanSou
         /api/check/links），失效与不确定的条目排序沉底，检测结果填充到
-        alive_state/alive_summary。
+        alive_state/alive_summary；非夸克链接不可检测，保持未检测状态。
         """
-        imdb_id, season, _ = parse_video_id(video_id)
-        meta = await fetch_meta(imdb_id, vtype, self.db_path)
-        if meta is None or not meta.title:
+        imdb_id, season, _ = parse_video_id(video_id or "")
+        meta = await fetch_meta(imdb_id, vtype, self.db_path) if imdb_id else None
+        if imdb_id and (meta is None or not meta.title):
             return None, [], f"TMDB 未收录 {video_id}", keyword
-        names = [keyword.strip(), meta.name_zh, meta.name_en]
+        names = [keyword.strip()] + ([meta.name_zh, meta.name_en] if meta else [])
         keywords: list[str] = []
         seen: set[str] = set()
         for n in names:
             if n and (nn := _norm(n)) not in seen:
                 seen.add(nn)
                 keywords.append(n)
-        kw = keywords[0] if keywords else meta.title
+        kw = keywords[0] if keywords else (meta.title if meta else "")
+        if not keywords:
+            return meta, [], "请输入搜索关键词", kw
         providers = self._providers()
         if not providers:
             return meta, [], "未配置任何外部搜索来源", kw
         tasks = [(p, k) for p in providers for k in keywords]
         results = await asyncio.gather(
-            *(p.search(k, limit=config.SEARCH_LIMIT) for p, k in tasks),
+            *(p.search(k, limit=config.SEARCH_LIMIT, cloud_types=disks)
+              for p, k in tasks),
             return_exceptions=True,
         )
         candidates: list[SearchCandidate] = []
@@ -155,21 +163,26 @@ class CandidateService:
                 best[cand.share_url] = cand
         merged = sorted(best.values(),
                         key=lambda c: (-c.score, -_published_ts(c)))
-        # 存活检测：失效与不确定的条目沉底（组内仍按 匹配度→发布时间 排序）
+        # 存活检测（仅夸克链接）：失效与不确定的沉底；非夸克未检测居中
+        # （组序：有效/需提取码 → 未检测 → 失效/不确定；组内按 匹配度→发布时间）
         if merged:
-            checks = await self.verify_links([{"share_url": c.share_url,
-                                               "passcode": c.passcode}
-                                              for c in merged])
-            by_url = {r["share_url"]: r for r in checks}
-            for c in merged:
-                r = by_url.get(c.share_url) or {}
-                c.alive_state = r.get("state") or "uncertain"
-                c.alive_summary = r.get("summary") or ""
-            merged.sort(key=lambda c: (0 if c.alive_state in ("ok", "locked") else 1,
+            quark = [c for c in merged if c.disk == "quark"]
+            if quark:
+                checks = await self.verify_links([{"share_url": c.share_url,
+                                                   "passcode": c.passcode}
+                                                  for c in quark])
+                by_url = {r["share_url"]: r for r in checks}
+                for c in quark:
+                    r = by_url.get(c.share_url) or {}
+                    c.alive_state = r.get("state") or "uncertain"
+                    c.alive_summary = r.get("summary") or ""
+            merged.sort(key=lambda c: (2 if c.alive_state in ("bad", "uncertain",
+                                                            "unsupported") else
+                                       1 if not c.alive_state else 0,
                                        -c.score, -_published_ts(c)))
         log.info("候选搜索 %s kw=%r: %d 关键词 %d 来源 %d 有效候选, 错误: %s",
-                 video_id, kw, len(keywords), len(providers), len(merged),
-                 errors or "无")
+                 video_id or "(独立搜索)", kw, len(keywords), len(providers),
+                 len(merged), errors or "无")
         return meta, merged, "；".join(errors), kw
 
     async def verify_links(self, items: list[dict]) -> list[dict]:

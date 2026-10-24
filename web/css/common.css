@@ -1,28 +1,102 @@
-/* 管理页共用基础样式：三个页面（setup / candidates / task）通用。 */
-body { font-family: system-ui, sans-serif; max-width: 720px; margin: 40px auto;
-       padding: 0 16px; color: #222; }
-.card { border: 1px solid #e3e3e3; border-radius: 12px; padding: 20px 24px;
-        box-shadow: 0 2px 8px rgba(0,0,0,.04); margin-bottom: 16px; }
-h1 { font-size: 20px; }
-code { background: #f4f4f4; padding: 2px 6px; border-radius: 4px; }
-.meta { color: #666; font-size: 13px; margin: 4px 0 12px; }
-button, a.button { background: #7b5cff; color: #fff; border: 0; border-radius: 8px;
-                   padding: 8px 18px; font-size: 14px; cursor: pointer; margin-right: 8px;
-                   display: inline-block; text-decoration: none; }
-button.sec, a.button.sec { background: #eee; color: #333; }
-button:disabled { opacity: .5; }
-.msg { margin: 12px 0; padding: 10px 14px; border-radius: 8px; display: none; }
-.ok { background: #e8f8ee; color: #177245; display: block; }
-.err { background: #fdecec; color: #b3261e; display: block; }
-.status { display: inline-block; padding: 4px 14px; border-radius: 8px;
-          font-weight: 600; font-size: 15px; }
-.s-PENDING, .s-SUBMITTING, .s-PROCESSING { background: #fff8e1; color: #9a6b00; }
-.s-COMPLETED { background: #e8f8ee; color: #177245; }
-.s-FAILED, .s-EXPIRED { background: #fdecec; color: #b3261e; }
-dl { display: grid; grid-template-columns: 96px 1fr; row-gap: 6px; font-size: 14px; }
-dt { color: #666; }
+/* 管理页共用基础样式（深色背景 + 绿色主题）：search / setup / task 三页通用。
+   适配桌面端 / 移动端 / TV 端：
+   - 触摸目标最小 44px（移动端手指操作）；
+   - :focus 高亮描边（TV 遥控器空间导航，配合 js/spatial-nav.js）；
+   - 大屏基准字号放大（TV 1080p 十 feet 体验）。 */
+:root {
+  --bg: #0b120d;           /* 页面背景：深墨绿黑 */
+  --card: #111a14;         /* 卡片背景 */
+  --card2: #17221b;        /* 输入框/内嵌块背景 */
+  --line: #25382c;         /* 边框 */
+  --text: #d9e6dd;         /* 主文字 */
+  --dim: #8aa392;          /* 次要文字 */
+  --accent: #34d873;       /* 品牌绿 */
+  --accent-strong: #23b95e;
+  --accent-ink: #052b15;   /* 绿底上的深色文字 */
+  --ok-bg: #123421; --ok-fg: #4ade80;
+  --warn-bg: #372a0e; --warn-fg: #fbbf24;
+  --err-bg: #3a151a; --err-fg: #f87171;
+  --dim-bg: #1a2620; --dim-fg: #8aa392;
+  --radius: 12px;
+  --focus-ring: 0 0 0 3px rgba(52, 216, 115, .5);
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; font-size: 16px; }
+/* TV / 大屏：整体放大（遥控器观看距离远） */
+@media (min-width: 1500px) and (min-height: 800px) {
+  html { font-size: 19px; }
+}
+body {
+  font-family: system-ui, "PingFang SC", "Microsoft YaHei", sans-serif;
+  margin: 0; background: var(--bg); color: var(--text);
+  font-size: 1rem; line-height: 1.55;
+}
+a { color: var(--accent); }
+code { background: var(--card2); padding: 2px 6px; border-radius: 4px; font-size: .9em; }
+
+/* 顶栏（三页通用导航） */
+.topbar { display: flex; align-items: center; gap: 12px;
+          max-width: 1100px; margin: 0 auto; padding: 16px 16px 0; }
+.brand { font-weight: 700; font-size: 1.15rem; color: var(--accent);
+         text-decoration: none; display: inline-flex; gap: 8px; align-items: center;
+         padding: 4px 6px; border-radius: 8px; }
+.brand .dot { width: .7em; height: .7em; border-radius: 50%;
+              background: var(--accent); box-shadow: 0 0 10px var(--accent); }
+.topbar .spacer { flex: 1; }
+.topbar .meta { margin: 0; }
+
+.card { background: var(--card); border: 1px solid var(--line);
+        border-radius: var(--radius); padding: 20px 24px; }
+main > .card, body > .card { max-width: 720px; margin: 18px auto 24px; }
+h1 { font-size: 1.25rem; margin: 0 0 10px; }
+.meta { color: var(--dim); font-size: .85rem; margin: 6px 0 10px;
+        overflow-wrap: anywhere; }
+
+/* 按钮 / 链接按钮：触摸目标 >= 44px */
+button, a.button {
+  background: var(--accent-strong); color: var(--accent-ink); border: 0;
+  border-radius: 10px; padding: 10px 20px; min-height: 44px;
+  font-size: .9rem; font-weight: 600; cursor: pointer; margin-right: 8px;
+  display: inline-flex; align-items: center; justify-content: center;
+  text-decoration: none; line-height: 1.2;
+}
+button.sec, a.button.sec { background: var(--card2); color: var(--text);
+                           border: 1px solid var(--line); font-weight: 500; }
+button:disabled { opacity: .45; cursor: not-allowed; }
+button:last-child, a.button:last-child { margin-right: 0; }
+
+/* TV 遥控器焦点高亮（空间导航可见性） */
+button:focus, a:focus, input:focus, textarea:focus,
+[tabindex]:focus { outline: 2px solid var(--accent);
+                  outline-offset: 2px; box-shadow: var(--focus-ring); }
+
+/* 表单控件 */
+input, textarea {
+  background: var(--card2); color: var(--text); border: 1px solid var(--line);
+  border-radius: 10px; padding: 10px 12px; font-size: .95rem;
+  width: 100%; min-height: 44px;
+}
+input::placeholder, textarea::placeholder { color: #5f7768; }
+textarea { height: 120px; word-break: break-all; resize: vertical; }
+label { display: block; margin: 12px 0 6px; color: var(--dim); font-size: .85rem; }
+form button[type="submit"] { margin-top: 14px; }
+
+/* 消息提示 */
+.msg { margin: 12px 0 0; padding: 10px 14px; border-radius: 10px; display: none;
+       font-size: .9rem; }
+.msg.ok { background: var(--ok-bg); color: var(--ok-fg); display: block; }
+.msg.err { background: var(--err-bg); color: var(--err-fg); display: block; }
+
+/* 任务状态徽章 */
+.status { display: inline-block; padding: 6px 16px; border-radius: 999px;
+          font-weight: 600; font-size: .95rem; }
+.s-PENDING, .s-SUBMITTING, .s-PROCESSING { background: var(--warn-bg); color: var(--warn-fg); }
+.s-COMPLETED { background: var(--ok-bg); color: var(--ok-fg); }
+.s-FAILED, .s-EXPIRED { background: var(--err-bg); color: var(--err-fg); }
+
+dl { display: grid; grid-template-columns: 96px 1fr; row-gap: 8px;
+     font-size: .9rem; margin: 14px 0 0; }
+dt { color: var(--dim); }
 dd { margin: 0; word-break: break-all; }
-input, textarea { width: 100%; box-sizing: border-box; padding: 10px;
-     border: 1px solid #ccc; border-radius: 8px; font-size: 14px; }
-textarea { height: 120px; word-break: break-all; }
-ol { padding-left: 20px; line-height: 1.7; }
+
+ol { padding-left: 20px; line-height: 1.9; }

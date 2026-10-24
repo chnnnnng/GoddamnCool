@@ -125,6 +125,60 @@ def test_search_candidate_defaults():
     assert c.passcode == "" and c.score == 0.0
 
 
+# ---------- 多网盘类型搜索（独立搜索模式） ----------
+
+MULTIDISK_BODY = {
+    "code": 0, "message": "success",
+    "data": {
+        "total": 3,
+        "merged_by_type": {
+            "quark": [{"url": "https://pan.quark.cn/s/f32d0e563a19",
+                       "note": "夸克资源", "datetime": "", "source": "p1"}],
+            "uc": [{"url": "https://drive.uc.cn/s/abcdef123456",
+                    "note": "UC资源", "datetime": "", "source": "p2"}],
+            "baidu": [{"url": "https://pan.baidu.com/s/1abc-XYZ?",
+                       "password": "ax72", "note": "百度资源",
+                       "datetime": "", "source": "p3"},
+                      {"url": "ftp://not-http.example/file",
+                       "note": "非 http 脏数据", "datetime": "", "source": "p4"}],
+        },
+    },
+}
+
+
+async def test_search_all_disks_labels_and_loose_urls():
+    """cloud_types=[] → 不限类型；每条候选带 disk 标签；非夸克宽松校验。"""
+    def handler(request: Request) -> Response:
+        body = request.read()
+        assert b"cloud_types" not in body  # 全部网盘：请求体不带类型过滤
+        return Response(200, json=MULTIDISK_BODY)
+
+    p = make_provider(handler)
+    try:
+        cands = await p.search("余罪", cloud_types=[])
+    finally:
+        await p.close()
+    assert [(c.disk, c.title) for c in cands] == [
+        ("quark", "夸克资源"), ("uc", "UC资源"), ("baidu", "百度资源")]
+    assert cands[2].passcode == "ax72"
+
+
+async def test_search_selected_disks_filters_types():
+    """cloud_types=["uc"] → 仅返回对应 merged_by_type 分组。"""
+    def handler(request: Request) -> Response:
+        body = request.read()
+        assert b'"cloud_types":["uc"]' in body
+        return Response(200, json=MULTIDISK_BODY)
+
+    p = make_provider(handler)
+    try:
+        cands = await p.search("余罪", cloud_types=["uc"])
+    finally:
+        await p.close()
+    assert [(c.disk, c.share_url) for c in cands] == [
+        ("uc", "https://drive.uc.cn/s/abcdef123456")]
+
+
 # ---------- 链接存活检测（/api/check/links） ----------
 
 GOOD = "https://pan.quark.cn/s/f32d0e563a19"

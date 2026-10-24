@@ -39,7 +39,8 @@ function render(t) {
   for (const [a, b] of rows) { dl.appendChild(a); dl.appendChild(b); }
   body.appendChild(dl);
 
-  if (t.status === 'COMPLETED') {
+  if (t.status === 'COMPLETED' && t.video_type && t.imdb_id) {
+    // 仅锚定影片的任务提供 Stremio 播放入口；独立转存任务无影片关联
     const box = document.createElement('div'); box.style.marginTop = '16px';
     const ep = (t.video_type === 'series' && t.season != null && t.episode != null)
       ? '/' + t.season + '/' + t.episode : '';
@@ -55,6 +56,12 @@ function render(t) {
     box.appendChild(play); box.appendChild(document.createTextNode(' '));
     box.appendChild(web); box.appendChild(tip);
     body.appendChild(box);
+  } else if (t.status === 'COMPLETED') {
+    const tip = document.createElement('div'); tip.className = 'meta';
+    tip.style.marginTop = '14px';
+    tip.textContent = '独立转存任务（未关联 Stremio 影片）：文件已保存到网盘根目录 '
+      + 'GODDAMNCOOL 文件夹，可在夸克网盘中直接播放。';
+    body.appendChild(tip);
   }
   const note = document.createElement('div');
   note.className = 'meta';

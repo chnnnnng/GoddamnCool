@@ -45,9 +45,11 @@ def patch_search(monkeypatch, candidates, errors="", meta=_META_SENTINEL):
     svc = CandidateService()
     calls = []
 
-    async def fake_search(vtype, video_id, keyword=""):
-        calls.append({"vtype": vtype, "id": video_id, "kw": keyword})
-        return meta, candidates, errors, keyword or (meta.title if meta else "")
+    async def fake_search(vtype, video_id, keyword="", disks=None):
+        calls.append({"vtype": vtype, "id": video_id, "kw": keyword,
+                      "disks": disks})
+        return (meta if video_id else None), candidates, errors, \
+            keyword or (meta.title if meta and video_id else "")
 
     monkeypatch.setattr(svc, "search", fake_search)
     monkeypatch.setattr(cr, "candidate_service", svc)
@@ -97,6 +99,42 @@ def test_search_meta_missing(monkeypatch):
                  meta=None)
     r = client.get("/api/candidates/search?vtype=movie&id=tt0000000", headers=AUTH)
     assert r.status_code == 404
+
+
+# ---------- 独立搜索（无影片 ID）与网盘类型筛选 ----------
+
+def test_independent_search_requires_keyword(monkeypatch):
+    """独立搜索模式：无 id 且无关键词 → 400。"""
+    r = client.get("/api/candidates/search", headers=AUTH)
+    assert r.status_code == 400 and "关键词" in r.json()["detail"]
+
+
+def test_independent_search_ok(monkeypatch):
+    """无 id：仅按关键词搜索一次，meta 为 null，候选带 disk 字段。"""
+    cands = [SearchCandidate(title="某剧 全集 4K", share_url=GOOD_URL,
+                             source="plugin:x", score=0.8)]
+    svc = patch_search(monkeypatch, cands)
+    r = client.get("/api/candidates/search?kw=%E4%BD%99%E7%BD%AA", headers=AUTH)
+    assert r.status_code == 200
+    data = r.json()
+    assert data["meta"] is None
+    assert data["keyword"] == "余罪"
+    assert data["candidates"][0]["disk"] == "quark"
+    assert svc.calls[-1] == {"vtype": "movie", "id": "", "kw": "余罪",
+                             "disks": None}  # 缺省 disks → Provider 默认仅夸克
+
+
+def test_search_disks_param(monkeypatch):
+    """disks 参数：all → 不限（[]）；缺省 → None（Provider 默认夸克）；列表透传；未知 400。"""
+    svc = patch_search(monkeypatch, [])
+    r = client.get("/api/candidates/search?kw=x&disks=all", headers=AUTH)
+    assert r.status_code == 200 and svc.calls[-1]["disks"] == []
+    r = client.get("/api/candidates/search?kw=x", headers=AUTH)
+    assert r.status_code == 200 and svc.calls[-1]["disks"] is None
+    r = client.get("/api/candidates/search?kw=x&disks=quark,uc", headers=AUTH)
+    assert r.status_code == 200 and svc.calls[-1]["disks"] == ["quark", "uc"]
+    r = client.get("/api/candidates/search?kw=x&disks=foobar", headers=AUTH)
+    assert r.status_code == 400 and "网盘类型" in r.json()["detail"]
 
 
 # ---------- TMDB 元数据缓存（双语名） ----------
@@ -280,7 +318,7 @@ def patch_real_search(monkeypatch, tmp_db, name_zh, name_en=None):
     monkeypatch.setattr(cs_mod, "fetch_meta", fake_fetch_meta)
     calls = []
 
-    async def fake_search(self, kw, limit=20):
+    async def fake_search(self, kw, limit=20, cloud_types=None):
         calls.append(kw)
         if kw == name_zh:  # 中文名批次：A 命中 + B
             return [SearchCandidate(title=f"{name_zh} 全集 4K", share_url=URL_A,
@@ -399,6 +437,35 @@ def test_confirm_rejects_invalid_mode(tmp_db, monkeypatch):
     patch_fetch_meta(monkeypatch)
     r = _confirm(mode="bulk")
     assert r.status_code == 400 and "mode" in r.json()["detail"]
+
+
+# ---------- 独立转存（share-only 任务，无影片 ID） ----------
+
+def test_confirm_independent_share_only(tmp_db, monkeypatch):
+    """无 id/vtype：share-only 任务（imdb_id 为空），季集可由 body 提供。"""
+    r = client.post("/api/candidates/confirm", headers=AUTH, json={
+        "share_url": GOOD_URL, "passcode": "ax72",
+        "title": "某剧 合集", "source": "plugin:x", "mode": "episode",
+        "season": 2, "episode": 6})
+    assert r.status_code == 200 and r.json()["created"] is True
+    task = db.get_task(tmp_db, r.json()["task_id"])
+    assert task["video_type"] == "" and task["imdb_id"] == ""
+    assert task["season"] == 2 and task["episode"] == 6
+    assert task["title"] == "某剧 合集"
+
+
+def test_confirm_independent_whole_and_no_anchor_mix(tmp_db):
+    """独立 whole 模式合法；带 id 但缺 vtype（或反之）→ 400。"""
+    r = client.post("/api/candidates/confirm", headers=AUTH, json={
+        "share_url": GOOD_URL, "title": "合集", "mode": "whole"})
+    assert r.status_code == 200 and db.get_task(
+        tmp_db, r.json()["task_id"])["mode"] == "whole"
+    for body in ({"vtype": "movie", "share_url": GOOD_URL},
+                 {"id": "tt5636724:1:1", "share_url": GOOD_URL},
+                 {"vtype": "tv", "id": "tt1", "share_url": GOOD_URL},
+                 {"share_url": GOOD_URL, "mode": "episode", "season": "x"}):
+        r = client.post("/api/candidates/confirm", headers=AUTH, json=body)
+        assert r.status_code == 400, body
 
 
 def test_whole_task_covers_all_episodes(tmp_path):
@@ -529,7 +596,7 @@ async def test_inspect_share_no_cookie_raises(tmp_db, monkeypatch):
 
 # ---------- 页面骨架（前后端分离：页面为 web/ 静态文件，后端提供静态服务） ----------
 
-PAGES = ("/setup", "/candidates", "/task/some-id")
+PAGES = ("/setup", "/search", "/candidates", "/task/some-id")
 
 
 def test_pages_render():

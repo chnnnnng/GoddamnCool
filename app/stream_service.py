@@ -164,7 +164,7 @@ class StreamService:
         转存完成后用户在 Stremio 重新刷新片源即可命中播放）。"""
         if not config.BASE_URL:
             return []
-        url = f"{config.BASE_URL}/candidates?vtype={vtype}&id={video_id}"
+        url = f"{config.BASE_URL}/search?vtype={vtype}&id={video_id}"
         extra = "。点击打开候选资源页，选择资源后转存到网盘。"
         imdb_id, season, episode = parse_video_id(video_id)
         tasks = db.get_tasks_for_video(self.db_path, vtype, imdb_id, season, episode)

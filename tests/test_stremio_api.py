@@ -245,7 +245,7 @@ def test_stream_low_confidence_guidance(monkeypatch):
     # 未命中时返回 externalUrl 引导流（候选资源页），不伪造播放流
     assert len(streams) == 1
     g = streams[0]
-    assert g["externalUrl"] == "http://addon.example.test/candidates?vtype=movie&id=tt0848228"
+    assert g["externalUrl"] == "http://addon.example.test/search?vtype=movie&id=tt0848228"
     assert "url" not in g
     assert r.headers.get("X-Addon-Status")
 
@@ -272,7 +272,7 @@ def test_stream_series_wrong_episode_guidance(monkeypatch):
     r = client.get("/stream/series/tt5636724:1:12.json")
     streams = r.json()["streams"]
     assert len(streams) == 1
-    assert streams[0]["externalUrl"].endswith("/candidates?vtype=series&id=tt5636724:1:12")
+    assert streams[0]["externalUrl"].endswith("/search?vtype=series&id=tt5636724:1:12")
 
 
 def test_health():

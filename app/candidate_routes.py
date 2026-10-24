@@ -1,9 +1,13 @@
-"""候选资源搜索与转存任务（阶段 3，前后端分离）。
+"""搜索资源页与转存任务 API（前后端分离）。
 
-页面为 web/ 下静态文件（candidates.html / task.html），本模块只提供
-JSON API 与页面路由；所有 /api/* 接口均要求 X-Admin-Token 头等于
-ADMIN_TOKEN（需求第 10 条），token 由前端保存于 localStorage，
-不进 URL、不落日志。
+页面为 web/ 下静态文件（search.html / task.html），本模块只提供 JSON API
+与页面路由；所有 /api/* 接口均要求 X-Admin-Token 头等于 ADMIN_TOKEN
+（需求第 10 条），token 由前端保存于 localStorage，不进 URL、不落日志。
+
+两种搜索模式（/search 页面按 URL 参数自动区分）：
+- Stremio 锚定模式：/search?vtype=movie&id=tt...（带影片，自动搜 TMDB 双语名，
+  转存任务锚定影片，完成后 Stream 自动命中）；
+- 独立搜索模式：/search（仅手动关键词 + 网盘类型筛选，转存为 share-only 任务）。
 
 安全要点：
 - 第三方候选标题在前端一律 textContent 渲染，防存储型 XSS；
@@ -34,34 +38,64 @@ _STATUS_TEXT = {
     "EXPIRED": "任务超时或失效",
 }
 
+# 独立搜索已知网盘类型（PanSou merged_by_type 键；前端 chips 与服务端校验共用）
+KNOWN_DISKS = ("quark", "uc", "baidu", "aliyun", "xunlei", "115", "123", "tianyi")
+
 
 def _check_token(request: Request) -> bool:
     token = request.headers.get("X-Admin-Token", "")
     return bool(config.ADMIN_TOKEN) and hmac.compare_digest(token, config.ADMIN_TOKEN)
 
 
+def _parse_disks(raw: str) -> list[str] | None:
+    """disks 参数解析（与 Provider 语义对齐）：
+    空 → None（默认仅夸克）；"all" → []（不限类型搜全部）；逗号分隔 → 校验后的列表。"""
+    raw = (raw or "").strip().lower()
+    if not raw:
+        return None
+    if raw == "all":
+        return []
+    disks = [d for d in (x.strip() for x in raw.split(",")) if d]
+    unknown = [d for d in disks if d not in KNOWN_DISKS]
+    if unknown or not disks:
+        raise ValueError(f"不支持的网盘类型: {','.join(unknown)}")
+    return disks
+
+
+@router.get("/search", response_class=FileResponse)
+async def search_page():
+    return page("search.html")
+
+
 @router.get("/candidates", response_class=FileResponse)
 async def candidates_page():
-    return page("candidates.html")
+    """兼容旧入口（Stremio externalUrl / 旧书签）：与 /search 同页。"""
+    return page("search.html")
 
 
 @router.get("/api/candidates/search")
 async def candidates_search(request: Request, vtype: str = "movie", id: str = "",
-                            kw: str = ""):
+                            kw: str = "", disks: str = ""):
     if not _check_token(request):
         return JSONResponse({"detail": "未授权"}, status_code=401)
-    if not id:
-        return JSONResponse({"detail": "缺少影片 ID"}, status_code=400)
-    meta, cands, errors, keyword = await candidate_service.search(vtype, id, keyword=kw)
-    if meta is None:
+    try:
+        disk_list = _parse_disks(disks)
+    except ValueError as e:
+        return JSONResponse({"detail": str(e)}, status_code=400)
+    if not id and not kw.strip():
+        return JSONResponse({"detail": "请输入搜索关键词"}, status_code=400)
+    meta, cands, errors, keyword = await candidate_service.search(
+        vtype, id, keyword=kw, disks=disk_list)
+    if id and meta is None:  # 锚定模式影片元数据失败（独立搜索 meta 恒为 null）
         return JSONResponse({"detail": errors or "影片元数据获取失败"}, status_code=404)
     return {
-        "meta": {"id": meta.id, "title": meta.title, "year": meta.year, "type": meta.type},
+        "meta": ({"id": meta.id, "title": meta.title, "year": meta.year,
+                  "type": meta.type} if meta else None),
         "keyword": keyword,
         "candidates": [{
             "title": c.title, "share_url": c.share_url, "passcode": c.passcode,
             "source": c.source, "published": c.published,
-            "provider": c.provider, "score": c.score,
+            "provider": c.provider, "disk": c.disk, "score": c.score,
             "alive_state": c.alive_state, "alive_summary": c.alive_summary,
         } for c in cands],
         "errors": errors,
@@ -79,25 +113,40 @@ async def candidates_confirm(request: Request):
     vtype = body.get("vtype", "")
     video_id = body.get("id", "")
     share_url = (body.get("share_url") or "").strip()
-    if vtype not in ("movie", "series") or not video_id:
+    # vtype 与 id 必须成对：都为空 → 独立转存；都非空 → Stremio 锚定转存
+    if (bool(vtype)) != (bool(video_id)) or (vtype and vtype not in ("movie", "series")):
         return JSONResponse({"detail": "vtype/id 参数无效"}, status_code=400)
     # 分享链接服务端强校验：仅接受夸克官方分享域（需求第 10 条）
     if not SHARE_URL_RE.match(share_url):
         return JSONResponse({"detail": "分享链接无效（仅支持 pan.quark.cn 分享链接）"},
                             status_code=400)
-    imdb_id, season, episode = parse_video_id(video_id)
-    meta = await fetch_meta(imdb_id, vtype, candidate_service.db_path)
-    if meta is None or not meta.title:
-        return JSONResponse({"detail": "影片元数据获取失败，请稍后重试"}, status_code=400)
     mode = body.get("mode") or "episode"
     if mode not in ("episode", "whole"):
         return JSONResponse({"detail": "mode 参数无效（episode/whole）"}, status_code=400)
+    if video_id:
+        # Stremio 锚定模式：季集来自影片 ID，标题以 TMDB 为准
+        imdb_id, season, episode = parse_video_id(video_id)
+        meta = await fetch_meta(imdb_id, vtype, candidate_service.db_path)
+        if meta is None or not meta.title:
+            return JSONResponse({"detail": "影片元数据获取失败，请稍后重试"}, status_code=400)
+        title = meta.title
+    else:
+        # 独立搜索模式：share-only 任务（不锚定影片），季集可选由 body 提供
+        imdb_id, season, episode = "", None, None
+        if mode == "episode" and (body.get("season") is not None
+                                  or body.get("episode") is not None):
+            try:
+                season = int(body["season"]) if body.get("season") is not None else None
+                episode = int(body["episode"]) if body.get("episode") is not None else None
+            except (TypeError, ValueError):
+                return JSONResponse({"detail": "season/episode 必须是整数"}, status_code=400)
+        title = (body.get("title") or "").strip()[:100] or "外部资源"
     # whole（转存完整剧集）：任务不锚定季集，整包落盘；episode 仅转存所选集
     task, created = db.create_task(
         config.DB_PATH, vtype=vtype, imdb_id=imdb_id,
         season=None if mode == "whole" else season,
         episode=None if mode == "whole" else episode,
-        title=meta.title,
+        title=title,
         candidate_title=(body.get("title") or "")[:300],
         share_url=share_url,
         passcode=(body.get("passcode") or "")[:32],
