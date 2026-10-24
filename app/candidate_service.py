@@ -105,8 +105,7 @@ class CandidateService:
         return providers
 
     async def search(self, vtype: str, video_id: str, keyword: str = "",
-                     disks: list[str] | None = None, cookie: str = "",
-                     existing_names: set[str] | None = None) \
+                     disks: list[str] | None = None, cookie: str = "") \
             -> tuple[VideoMeta | None, list[SearchCandidate], str, str]:
         """返回 (影片元数据, 候选列表, 错误说明, 实际使用的关键词)。
 
@@ -118,12 +117,12 @@ class CandidateService:
         disks: 网盘类型列表；None → 默认仅夸克，空列表 → 全部网盘（透传 Provider）。
         cookie: 调用者自己绑定的网盘 Cookie（多用户隔离），用于"有效"候选的
         分享内容解析；缺省时内容解析跳过（详情不展示、不排除无视频条目）。
-        existing_names: 用户网盘全部文件名集合，用于对"有效"候选预计算
-        "网盘中已有 N 项"（搜索结果卡片直显；弹窗 inspect 仍实时刷新）。
         来源级失败不中断整体搜索。候选合并后统一对夸克链接做存活检测（PanSou
         /api/check/links），并对"有效"候选解析分享内容：详情填充到 detail
         （搜索结果页直显），内容中无视频文件的标记为 bad 排除出"有效"。
         结果缓存（kv_cache，TTL 默认 1 天）：命中时不再请求外部来源。
+        "网盘中已有 N 项"不在本层计算（detail 可能来自 1 天缓存），由路由层
+        组装响应时实时补算。
         """
         imdb_id, season, _ = parse_video_id(video_id or "")
         meta = await fetch_meta(imdb_id, vtype, self.db_path) if imdb_id else None
@@ -193,8 +192,7 @@ class CandidateService:
                     c.alive_state = r.get("state") or "uncertain"
                     c.alive_summary = r.get("summary") or ""
             # 内容解析（仅"有效"夸克候选）：详情直显 + 无视频文件排除（需求 4/5）
-            await self._enrich_ok(quark, cookie=cookie,
-                                  existing_names=existing_names)
+            await self._enrich_ok(quark, cookie=cookie)
             self._resort(merged)
         log.info("候选搜索 %s kw=%r: %d 关键词 %d 来源 %d 有效候选, 错误: %s",
                  video_id or "(独立搜索)", kw, len(keywords), len(providers),
@@ -228,12 +226,10 @@ class CandidateService:
                                    -c.score, -_published_ts(c)))
 
     async def _enrich_ok(self, quark: list[SearchCandidate],
-                         cookie: str = "",
-                         existing_names: set[str] | None = None) -> None:
+                         cookie: str = "") -> None:
         """对"有效"的夸克候选并发解析分享内容（inspect 结果自带 1 天缓存）：
         - detail 填充到候选（搜索结果页直显季集/规格摘要）；
         - 内容中无视频文件 → 标记 bad（"内容无视频文件"），排挤出"有效"；
-        - existing_names 提供时预计算"网盘中已有 N 项"（detail.existing_count）；
         - 单条解析失败不影响整体（保持原存活状态）。"""
         targets = [c for c in quark if c.alive_state == "ok"][:settings.get("INSPECT_LIMIT")]
         if not targets:
@@ -250,15 +246,9 @@ class CandidateService:
 
         await asyncio.gather(*(one(c) for c in targets))
         for c in targets:
-            if c.detail is not None:
-                if existing_names:
-                    c.detail["existing_count"] = sum(
-                        1 for f in (c.detail.get("files") or [])
-                        if (f.get("name") or "") in existing_names
-                        or os.path.basename(f.get("name") or "") in existing_names)
-                if c.detail.get("video_count", 0) == 0:
-                    c.alive_state = "bad"
-                    c.alive_summary = "内容无视频文件"
+            if c.detail is not None and c.detail.get("video_count", 0) == 0:
+                c.alive_state = "bad"
+                c.alive_summary = "内容无视频文件"
 
     async def verify_links(self, items: list[dict]) -> list[dict]:
         """批量检测候选分享链接存活状态（PanSou /api/check/links）。

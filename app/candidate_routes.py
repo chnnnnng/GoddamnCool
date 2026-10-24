@@ -131,11 +131,19 @@ async def candidates_search(request: Request, vtype: str = "movie", id: str = ""
                 status_code=429)
     db.incr_search_count(config.DB_PATH, user["id"])
     user_cookie = db.load_user_cookie(config.DB_PATH, user["id"]) or ""
-    # 网盘已有文件名集合（60s 用户级缓存）：搜索阶段预计算"网盘中已有 N 项"，
-    # 结果卡片直接显示，无需点开"查看内容"才知道
     meta, cands, errors, keyword = await candidate_service.search(
-        vtype, id, keyword=kw, disks=disk_list, cookie=user_cookie,
-        existing_names=await _drive_existing_names(user_cookie, user["id"]))
+        vtype, id, keyword=kw, disks=disk_list, cookie=user_cookie)
+    # "网盘中已有 N 项"实时补算：不依赖搜索缓存内容（detail 可能来自 1 天前
+    # 的缓存），缓存命中与否两条路径都覆盖，结果卡片直接显示无需点开弹窗
+    existing = await _drive_existing_names(user_cookie, user["id"])
+    if existing:
+        for c in cands:
+            d = getattr(c, "detail", None)
+            if d and d.get("files"):
+                d["existing_count"] = sum(
+                    1 for f in d["files"]
+                    if (f.get("name") or "") in existing
+                    or os.path.basename(f.get("name") or "") in existing)
     if id and meta is None:  # 锚定模式影片元数据失败（独立搜索 meta 恒为 null）
         return JSONResponse({"detail": errors or "影片元数据获取失败"}, status_code=404)
     return {

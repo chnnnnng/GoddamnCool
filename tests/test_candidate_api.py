@@ -57,8 +57,7 @@ def patch_search(monkeypatch, candidates, errors="", meta=_META_SENTINEL):
     svc = CandidateService()
     calls = []
 
-    async def fake_search(vtype, video_id, keyword="", disks=None, cookie="",
-                          existing_names=None):
+    async def fake_search(vtype, video_id, keyword="", disks=None, cookie=""):
         calls.append({"vtype": vtype, "id": video_id, "kw": keyword,
                       "disks": disks, "cookie": cookie})
         return (meta if video_id else None), candidates, errors, \
