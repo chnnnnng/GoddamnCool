@@ -225,14 +225,18 @@ class QuarkDriveProvider(CloudDriveProvider):
     async def list_all_file_names(self, max_depth: int = 3) -> set[str]:
         """递归列出网盘全部文件名（用于"分享文件网盘中已存在"提示比对）。
 
-        搜索接口不返回目录，故用 /file/sort 逐层分页；深度与页数有上限防失控。"""
+        搜索接口不返回目录，故用 /file/sort 逐层分页；深度与页数有上限防失控。
+        注意：/file/sort 单页实际上限约 50（传 100 会被截断），分页结束
+        优先用响应 total 判断，缺失时退回 len < size。"""
         names: set[str] = set()
+        size = 50
 
         async def walk(pdir_fid: str, depth: int) -> None:
             page = 1
-            while page <= 30:  # 单层最多 30 页 × 100 条
+            while page <= 50:  # 单层最多 50 页 × 50 条
                 data = await self._request("GET", "/file/sort", params={
-                    "pdir_fid": pdir_fid, "_page": str(page), "_size": "100"})
+                    "pdir_fid": pdir_fid, "_page": str(page),
+                    "_size": str(size), "_fetch_total": "1"})
                 lst = data.get("list") or []
                 for e in lst:
                     if e.get("dir"):
@@ -240,7 +244,11 @@ class QuarkDriveProvider(CloudDriveProvider):
                             await walk(e.get("fid", ""), depth + 1)
                     elif e.get("file_name"):
                         names.add(e["file_name"])
-                if len(lst) < 100:
+                total = data.get("_total") or data.get("total")
+                if total is not None:
+                    if page * size >= int(total):
+                        return
+                elif len(lst) < size:
                     return
                 page += 1
 

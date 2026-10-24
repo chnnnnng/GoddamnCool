@@ -244,7 +244,8 @@ async def candidates_inspect(request: Request):
         finally:
             await provider.close()
         for f in data.get("files", []):
-            f["exists"] = (f.get("name") or "") in existing
+            nm = f.get("name") or ""
+            f["exists"] = nm in existing or os.path.basename(nm) in existing
         data["existing_count"] = sum(1 for f in data.get("files", [])
                                      if f.get("exists"))
     except Exception:  # 网盘列名失败不阻塞分享解析，仅无提示
