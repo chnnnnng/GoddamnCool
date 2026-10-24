@@ -66,6 +66,8 @@ button, a.button {
 button.sec, a.button.sec { background: var(--card2); color: var(--text);
                            border: 1px solid var(--line); font-weight: 500; }
 button:disabled { opacity: .45; cursor: not-allowed; }
+/* author 的 display:inline-flex 会覆盖 UA 的 [hidden]，需显式还原 */
+button[hidden] { display: none; }
 button:last-child, a.button:last-child { margin-right: 0; }
 
 /* TV 遥控器焦点高亮（空间导航可见性） */

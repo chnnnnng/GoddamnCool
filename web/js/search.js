@@ -1,7 +1,7 @@
 /* 网盘资源搜索页（阶段 6/7）：独立搜索模式与 Stremio 锚定模式二合一。
- * 搜索结果单栏直显内容详情摘要（季集/规格/大小），卡片按钮按内容自动切换
- * 全部剧集/当前剧集；「查看内容」弹窗展示完整文件清单（含规格），主按钮随
- * 文件行点选实时切换：未选=全部/当前剧集，选部分=所选（N），全选=全部。
+ * 搜索结果单栏直显内容详情摘要（灰字统计 + 季集/规格 badge 行），卡片按钮按
+ * 内容自动切换 全部剧集/当前剧集；「查看内容」弹窗提供独立【转存全部剧集】
+ * 按钮（多视频时）与动态主按钮（点选文件行 → 转存所选（N），未选 → 当前剧集）。
  * 默认只显示检测"有效"的结果；TV 端方向键空间导航（spatial-nav.js）。 */
 'use strict';
 const params = new URLSearchParams(location.search);
@@ -64,7 +64,7 @@ function formatSpec(s) {
   return parts.join(' · ');
 }
 function aggregateSpec(d) {
-  /* 多个文件的规格各维度去重合并（整季规格一致时显示为一条） */
+  /* 多个文件的规格各维度去重合并，返回 badge 数组（如 ["4K","WEB-DL","H.265","AAC"]） */
   const dims = { resolution: new Set(), source: new Set(), codec: new Set(),
     audio: new Set(), subtitle: new Set() };
   let any = false;
@@ -77,14 +77,14 @@ function aggregateSpec(d) {
       else if (s[k]) dims[k].add(s[k]);
     }
   }
-  if (!any) return '';
+  if (!any) return [];
   const parts = [];
   if (dims.resolution.size) parts.push([...dims.resolution].join('/'));
   if (dims.source.size) parts.push([...dims.source].join('/'));
   if (dims.codec.size) parts.push([...dims.codec].join('/'));
   if (dims.audio.size) parts.push([...dims.audio].join('/'));
   if (dims.subtitle.size) parts.push('字幕' + [...dims.subtitle].join('/'));
-  return parts.join(' · ');
+  return parts;
 }
 
 /* ---- 筛选 chips ---- */
@@ -254,16 +254,14 @@ function appendDetailSummary(card, d) {
     `视频 ${d.video_count} 个 · 共 ${d.total_size_h}` +
     (d.other_count ? ` · 其他文件 ${d.other_count} 个` : ''));
   card.appendChild(sum);
-  const specLine = aggregateSpec(d);
-  if (specLine) card.appendChild(el('div', 'dspec', specLine));
-  if (d.seasons && d.seasons.length) {
-    const seas = el('div', 'seas');
-    for (const s of d.seasons) {
-      seas.appendChild(el('span', 'seaschip',
-        s.season ? `S${pad(s.season)} · ${s.count} 集 · ${s.size_h}` : `共 ${s.count} 集 · ${s.size_h}`));
-    }
-    card.appendChild(seas);
+  /* 季集与影片规格 badges 同行显示 */
+  const chips = el('div', 'seas');
+  for (const s of (d.seasons || [])) {
+    chips.appendChild(el('span', 'seaschip',
+      s.season ? `S${pad(s.season)} · ${s.count} 集 · ${s.size_h}` : `共 ${s.count} 集 · ${s.size_h}`));
   }
+  for (const t of aggregateSpec(d)) chips.appendChild(el('span', 'seaschip', t));
+  if (chips.children.length) card.appendChild(chips);
 }
 
 /* ---- 查看内容弹窗 ---- */
@@ -321,38 +319,43 @@ function renderDetail(c, d) {
   wrap.appendChild(el('div', 'dsum',
     `视频 ${d.video_count} 个 · 共 ${d.total_size_h}` +
     (d.other_count ? ` · 其他文件 ${d.other_count} 个` : '')));
-  const specLine = aggregateSpec(d);
-  if (specLine) wrap.appendChild(el('div', 'dspec', specLine));
-  if (d.seasons && d.seasons.length) {
-    const seas = el('div', 'seas');
-    for (const s of d.seasons) {
-      seas.appendChild(el('span', 'seaschip',
-        s.season ? `S${pad(s.season)} · ${s.count} 集 · ${s.size_h}` : `共 ${s.count} 集 · ${s.size_h}`));
-    }
-    wrap.appendChild(seas);
+  /* 季集与影片规格 badges 同行显示 */
+  const chips = el('div', 'seas');
+  for (const s of (d.seasons || [])) {
+    chips.appendChild(el('span', 'seaschip',
+      s.season ? `S${pad(s.season)} · ${s.count} 集 · ${s.size_h}` : `共 ${s.count} 集 · ${s.size_h}`));
   }
+  for (const t of aggregateSpec(d)) chips.appendChild(el('span', 'seaschip', t));
+  if (chips.children.length) wrap.appendChild(chips);
 
-  /* 动态主按钮：随文件行点选实时切换转存方式——
-     未选 → 当前剧集（锚定剧集）/ 全部；选部分 → 所选（N）；全选 → 全部。 */
+  /* 按钮：
+     - 独立【转存全部剧集】按钮：仅多视频时显示，无需手动全选；
+     - 动态主按钮：点选部分 → 转存所选（N）；未选 → 锚定时当前剧集，
+       独立单视频时当前剧集（整包即该视频），独立多视频时隐藏（全部按钮已提供）。 */
+  const wholeBtn = el('button', 'save', isSeries ? '转存全部剧集' : '转存全部文件');
+  wholeBtn.type = 'button';
+  wholeBtn.onclick = () => confirmSave(wholeBtn, c, 'whole');
+
   const mainBtn = el('button', 'save');
   mainBtn.type = 'button';
   let mainMode = 'whole';
   const updateMainBtn = () => {
-    if (files.length && pickedFids.size >= files.length) {
-      mainMode = 'whole';   // 全选 = 转存全部
-      mainBtn.textContent = isSeries ? '转存全部剧集' : '转存全部文件';
-    } else if (pickedFids.size) {
+    if (!files.length) { mainBtn.hidden = true; return; }
+    if (pickedFids.size) {
       mainMode = 'picks';
-      mainBtn.textContent = `转存所选剧集（${pickedFids.size}）`;
-    } else if (anchored && vtype === 'series') {
-      mainMode = 'episode';
-      mainBtn.textContent = `转存当前剧集（S${pad(curSeason || 0)}E${pad(curEpisode || 0)}）`;
+      mainBtn.hidden = false;
+      mainBtn.textContent = `转存所选${isSeries ? '剧集' : '文件'}（${pickedFids.size}）`;
     } else if (anchored) {
       mainMode = 'episode';
-      mainBtn.textContent = '转存当前影片';
+      mainBtn.hidden = false;
+      mainBtn.textContent = vtype === 'series'
+        ? `转存当前剧集（S${pad(curSeason || 0)}E${pad(curEpisode || 0)}）` : '转存当前影片';
+    } else if (files.length > 1) {
+      mainBtn.hidden = true;   // 独立多视频：「转存全部剧集」按钮已覆盖
     } else {
       mainMode = 'whole';
-      mainBtn.textContent = isSeries ? '转存全部剧集' : '转存全部文件';
+      mainBtn.hidden = false;
+      mainBtn.textContent = isSeries ? '转存当前剧集' : '转存当前影片';
     }
   };
   mainBtn.onclick = () => confirmSave(mainBtn, c, mainMode, null,
@@ -383,11 +386,12 @@ function renderDetail(c, d) {
   }
   wrap.appendChild(list);
   wrap.appendChild(el('div', 'hint',
-    '点选文件行可缩小转存范围：不选 = 转存全部，选部分 = 仅转存所选，全选 = 转存全部。'));
+    '点选文件行可仅转存所选剧集（再次点击取消）。'));
 
   const acts = el('div', 'actions');
   updateMainBtn();
   acts.appendChild(mainBtn);
+  if (files.length > 1) acts.appendChild(wholeBtn);
   wrap.appendChild(acts);
   return wrap;
 }

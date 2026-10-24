@@ -130,16 +130,11 @@
 .v-unsupported { color: var(--dim); }
 .v-uncertain, .v-none { color: var(--dim); }
 
-/* 详情摘要直显 */
+/* 详情摘要直显（灰字弱化；季集/规格用 badge 行突出） */
 .dsum {
-  color: var(--fg);
-  font-size: .88rem;
-  margin: 6px 0;
-}
-.dspec {
   color: var(--dim);
   font-size: .8rem;
-  margin: 2px 0 8px;
+  margin: 4px 0 6px;
 }
 .seas {
   display: flex;
