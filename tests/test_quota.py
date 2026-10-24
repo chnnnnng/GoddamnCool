@@ -33,7 +33,8 @@ def patched_search(monkeypatch):
     """隔离外部来源与 TMDB：search 恒返回一个候选。"""
     svc = CandidateService()
 
-    async def fake_search(vtype, video_id, keyword="", disks=None, cookie=""):
+    async def fake_search(vtype, video_id, keyword="", disks=None, cookie="",
+                          existing_names=None):
         return None, [], "", keyword
 
     monkeypatch.setattr(svc, "search", fake_search)

@@ -127,6 +127,9 @@ async function dosearch() {
     if (curDisk !== 'quark') q.set('disks', curDisk);
     const data = await api(`/api/candidates/search?${q}`);
     lastCands = data.candidates || [];
+    /* 摘要与弹窗数据分离：summary=搜索响应摘要（卡片直显），
+       detail=inspect 完整数据（弹窗渲染，含网盘已有标记） */
+    for (const c of lastCands) c.summary = c.detail || null;
     lastMeta = data.meta;
     lastKeyword = data.keyword || kw;
     if (!kw) kwEl.value = lastKeyword;  // 锚定模式自动回填实际使用的关键词
@@ -203,8 +206,9 @@ function renderCard(c) {
   badges.appendChild(v);
   card.appendChild(badges);
 
-  // 内容详情摘要直显（后端随搜索返回有效候选的解析结果）
-  if (c.detail) appendDetailSummary(card, c.detail);
+  // 内容详情摘要直显：inspect 过用完整数据（含"网盘中已有"），否则用搜索摘要
+  const sum = c.detail || c.summary;
+  if (sum) appendDetailSummary(card, sum);
 
   if (c.share_url) {
     const a = el('a', 'link', c.share_url);
@@ -219,7 +223,7 @@ function renderCard(c) {
     if (!dead) {
       /* 卡片按钮规则（用户需求）：多个视频 → 转存全部剧集；
          只有 1 个视频或锚定了 Stremio 剧集 → 转存当前剧集。 */
-      const vc = c.detail ? c.detail.video_count : null;
+      const vc = c.summary ? c.summary.video_count : null;
       const btns = [];
       if (anchored && vtype === 'series') {
         btns.push([`转存当前剧集（S${pad(curSeason || 0)}E${pad(curEpisode || 0)}）`, 'episode']);
@@ -280,14 +284,13 @@ async function openDetail(btn, c) {
   mcloseEl.focus();
   showLoading('解析分享中…');
   try {
-    if (!c.detail) {
-      const data = await api('/api/candidates/inspect', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ share_url: c.share_url, passcode: c.passcode }),
-      });
-      c.detail = data;
-    }
+    // 总是实时调 inspect：网盘"已有同名"标记需要新鲜数据（service 层有分享缓存）
+    const data = await api('/api/candidates/inspect', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ share_url: c.share_url, passcode: c.passcode }),
+    });
+    c.detail = data;
     mbodyEl.textContent = '';
     mbodyEl.appendChild(renderDetail(c, c.detail));
     renderResults();  // 弹窗解析完成后回填卡片摘要（含"网盘中已有 N 项"）

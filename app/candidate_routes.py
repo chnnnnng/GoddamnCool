@@ -21,6 +21,7 @@
 import json
 import os
 import re
+import time
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
@@ -71,6 +72,32 @@ def _unlimited(user: dict) -> bool:
     return user["role"] == "admin" or user["tier"] == "pro"
 
 
+# 网盘文件名集合缓存 {user_id: (拉取时间, 文件名集合)}；TTL 60s——
+# 转存/改名后最多延迟 1 分钟反映到"网盘中已有 N 项"，避免每次搜索都全盘递归
+_DRIVE_EXISTING_TTL = 60.0
+_drive_existing_cache: dict[str, tuple[float, set[str]]] = {}
+
+
+async def _drive_existing_names(cookie: str, user_id: str) -> set[str]:
+    """拉取用户网盘全部文件名集合（list_all_file_names 递归列取），失败返回空集合。"""
+    if not cookie:
+        return set()
+    now = time.monotonic()
+    hit = _drive_existing_cache.get(user_id)
+    if hit and now - hit[0] < _DRIVE_EXISTING_TTL:
+        return hit[1]
+    provider = QuarkDriveProvider(cookie=cookie, db_path=config.DB_PATH,
+                                  user_id=user_id)
+    try:
+        names = await provider.list_all_file_names()
+    except Exception:  # 网盘列名失败不阻塞搜索，仅无提示
+        return set()
+    finally:
+        await provider.close()
+    _drive_existing_cache[user_id] = (now, names)
+    return names
+
+
 @router.get("/search")
 async def search_page():
     return page("search.html")
@@ -104,8 +131,11 @@ async def candidates_search(request: Request, vtype: str = "movie", id: str = ""
                 status_code=429)
     db.incr_search_count(config.DB_PATH, user["id"])
     user_cookie = db.load_user_cookie(config.DB_PATH, user["id"]) or ""
+    # 网盘已有文件名集合（60s 用户级缓存）：搜索阶段预计算"网盘中已有 N 项"，
+    # 结果卡片直接显示，无需点开"查看内容"才知道
     meta, cands, errors, keyword = await candidate_service.search(
-        vtype, id, keyword=kw, disks=disk_list, cookie=user_cookie)
+        vtype, id, keyword=kw, disks=disk_list, cookie=user_cookie,
+        existing_names=await _drive_existing_names(user_cookie, user["id"]))
     if id and meta is None:  # 锚定模式影片元数据失败（独立搜索 meta 恒为 null）
         return JSONResponse({"detail": errors or "影片元数据获取失败"}, status_code=404)
     return {
