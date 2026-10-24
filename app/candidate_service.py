@@ -115,8 +115,9 @@ class CandidateService:
         关键词搜索一次。
         disks: 网盘类型列表；None → 默认仅夸克，空列表 → 全部网盘（透传 Provider）。
         来源级失败不中断整体搜索。候选合并后统一对夸克链接做存活检测（PanSou
-        /api/check/links），失效与不确定的条目排序沉底，检测结果填充到
-        alive_state/alive_summary；非夸克链接不可检测，保持未检测状态。
+        /api/check/links），并对"有效"候选解析分享内容：详情填充到 detail
+        （搜索结果页直显），内容中无视频文件的标记为 bad 排除出"有效"。
+        结果缓存（kv_cache，TTL 默认 1 天）：命中时不再请求外部来源。
         """
         imdb_id, season, _ = parse_video_id(video_id or "")
         meta = await fetch_meta(imdb_id, vtype, self.db_path) if imdb_id else None
@@ -135,6 +136,16 @@ class CandidateService:
         providers = self._providers()
         if not providers:
             return meta, [], "未配置任何外部搜索来源", kw
+        # 结果缓存（需求 7：搜索结果缓存 1 天）。key 含有效关键词与网盘类型；
+        # 仅缓存无来源级错误的成功结果（避免把瞬时故障的空结果缓存一天）。
+        disks_key = "all" if disks == [] else (",".join(disks) if disks else "default")
+        cache_key = (f"search:{vtype}|{video_id or ''}|{'>'.join(keywords)}"
+                     f"|{disks_key}")
+        if cached := db.get_cache(self.db_path, cache_key):
+            meta_c = VideoMeta(cached["meta"]) if cached.get("meta") else None
+            cands_c = [SearchCandidate(**c) for c in cached["candidates"]]
+            log.info("候选搜索命中缓存 %s", cache_key)
+            return meta_c, cands_c, "", cached["kw"]
         tasks = [(p, k) for p in providers for k in keywords]
         results = await asyncio.gather(
             *(p.search(k, limit=config.SEARCH_LIMIT, cloud_types=disks)
@@ -164,7 +175,6 @@ class CandidateService:
         merged = sorted(best.values(),
                         key=lambda c: (-c.score, -_published_ts(c)))
         # 存活检测（仅夸克链接）：失效与不确定的沉底；非夸克未检测居中
-        # （组序：有效/需提取码 → 未检测 → 失效/不确定；组内按 匹配度→发布时间）
         if merged:
             quark = [c for c in merged if c.disk == "quark"]
             if quark:
@@ -176,14 +186,62 @@ class CandidateService:
                     r = by_url.get(c.share_url) or {}
                     c.alive_state = r.get("state") or "uncertain"
                     c.alive_summary = r.get("summary") or ""
-            merged.sort(key=lambda c: (2 if c.alive_state in ("bad", "uncertain",
-                                                            "unsupported") else
-                                       1 if not c.alive_state else 0,
-                                       -c.score, -_published_ts(c)))
+            # 内容解析（仅"有效"夸克候选）：详情直显 + 无视频文件排除（需求 4/5）
+            await self._enrich_ok(quark)
+            self._resort(merged)
         log.info("候选搜索 %s kw=%r: %d 关键词 %d 来源 %d 有效候选, 错误: %s",
                  video_id or "(独立搜索)", kw, len(keywords), len(providers),
                  len(merged), errors or "无")
+        if not errors:
+            db.set_cache(self.db_path, cache_key, {
+                "meta": ({"imdb_id": meta.id, "name": meta.title,
+                          "name_zh": meta.name_zh, "name_en": meta.name_en,
+                          "type": meta.type, "year": meta.year,
+                          "videos": meta.videos} if meta else None),
+                "candidates": [self._cand_dict(c) for c in merged],
+                "kw": kw,
+            }, config.SEARCH_CACHE_TTL)
         return meta, merged, "；".join(errors), kw
+
+    @staticmethod
+    def _cand_dict(c: SearchCandidate) -> dict:
+        return {"title": c.title, "share_url": c.share_url,
+                "passcode": c.passcode, "source": c.source,
+                "published": c.published, "provider": c.provider,
+                "disk": c.disk, "score": c.score,
+                "alive_state": c.alive_state, "alive_summary": c.alive_summary,
+                "detail": c.detail}
+
+    @staticmethod
+    def _resort(merged: list[SearchCandidate]) -> None:
+        """存活三组排序：有效/需提取码 → 未检测 → 失效/不确定；组内按匹配度→时间。"""
+        merged.sort(key=lambda c: (2 if c.alive_state in ("bad", "uncertain",
+                                                          "unsupported") else
+                                   1 if not c.alive_state else 0,
+                                   -c.score, -_published_ts(c)))
+
+    async def _enrich_ok(self, quark: list[SearchCandidate]) -> None:
+        """对"有效"的夸克候选并发解析分享内容（inspect 结果自带 1 天缓存）：
+        - detail 填充到候选（搜索结果页直显季集/规格摘要）；
+        - 内容中无视频文件 → 标记 bad（"内容无视频文件"），排挤出"有效"；
+        - 单条解析失败不影响整体（保持原存活状态）。"""
+        targets = [c for c in quark if c.alive_state == "ok"][:config.INSPECT_LIMIT]
+        if not targets:
+            return
+        sem = asyncio.Semaphore(4)
+
+        async def one(c: SearchCandidate) -> None:
+            async with sem:
+                try:
+                    c.detail = await self.inspect_share(c.share_url, c.passcode)
+                except Exception as e:  # 解析失败保守保留原状态
+                    log.info("候选内容解析失败 %s: %s", c.share_url, e)
+
+        await asyncio.gather(*(one(c) for c in targets))
+        for c in targets:
+            if c.detail is not None and c.detail.get("video_count", 0) == 0:
+                c.alive_state = "bad"
+                c.alive_summary = "内容无视频文件"
 
     async def verify_links(self, items: list[dict]) -> list[dict]:
         """批量检测候选分享链接存活状态（PanSou /api/check/links）。
@@ -225,8 +283,11 @@ class CandidateService:
         返回 {"video_count", "other_count", "total_size", "total_size_h",
         "is_series", "seasons", "files"}；files 每项含 name/path/fid/size/
         size_h/season/episode/spec（清晰度/编码/音轨/字幕/语言，来自文件名标注）。
-        分享失效/提取码错误等抛 ProviderError。
+        分享失效/提取码错误等抛 ProviderError。结果缓存（TTL 默认 1 天）。
         """
+        cache_key = f"inspect:{share_url}|{passcode}"
+        if (cached := db.get_cache(self.db_path, cache_key)) is not None:
+            return cached
         cookie = db.load_cookie(self.db_path) or (config.QUARK_COOKIE or None)
         if not cookie:
             raise ProviderError("未绑定网盘账号，请访问 /setup 完成授权")
@@ -262,7 +323,7 @@ class CandidateService:
                 s = seasons.setdefault(f["season"], {"count": 0, "size": 0})
                 s["count"] += 1
                 s["size"] += f["size"]
-        return {
+        data = {
             "video_count": len(files),
             "other_count": other_count,
             "total_size": total_size,
@@ -272,5 +333,7 @@ class CandidateService:
             "seasons": [{"season": s, "count": v["count"],
                          "size_h": _human_size(v["size"])}
                         for s, v in sorted(seasons.items())],
-            "files": files,
+            "files": files[:80],  # 缓存/展示上限，防超大分享撑爆响应
         }
+        db.set_cache(self.db_path, cache_key, data, config.SEARCH_CACHE_TTL)
+        return data

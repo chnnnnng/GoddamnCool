@@ -145,29 +145,40 @@ class TransferWorker:
                 raise PermanentError(f"分享访问失败: {e}") from e
             entries = await provider.list_share_files(pwd_id, stoken)
             meta = await self._load_meta(task)
-            # whole 模式（转存完整剧集）：跳过选片，整包落盘（阶段 5）
-            picked = (None if task.get("mode") == "whole"
-                      else self._pick_file(entries, meta, task))
-
-            if picked is not None:
-                existing = await self._find_duplicate(provider, picked)
-                if existing:
-                    log.info("任务 %s 防重命中，网盘已有 %s，跳过转存", task["id"], picked.name)
-                    return self._complete(task, fid=existing, located="dedup",
-                                          mode="targeted", name=picked.name,
-                                          size=picked.size)
-                result = {"mode": "targeted", "name": picked.name,
-                          "size": picked.size, "path": picked.path}
-            else:
+            mode = task.get("mode") or "episode"
+            if mode == "whole":  # 转存完整剧集：跳过选片，整包落盘（阶段 5）
                 tops = [e for e in entries if "/" not in e.path]
                 if not tops:
                     raise PermanentError("分享内容为空")
-                result = {"mode": "bulk", "share_entries": len(tops),
-                          "names": [t.path for t in tops][:20]}
+                chosen, result = tops, {"mode": "bulk", "share_entries": len(tops),
+                                        "names": [t.path for t in tops][:20]}
+            elif mode == "picks":  # 转存所选剧集（可多选）：按 fid 列表转存（阶段 6）
+                chosen, result = await self._pick_files_by_fids(provider, task, entries)
+                if not chosen:  # 全部防重命中：网盘已有所选文件
+                    return self._complete_picks_dedup(task)
+            else:
+                picked = self._pick_file(entries, meta, task)
+                if picked is not None:
+                    existing = await self._find_duplicate(provider, picked)
+                    if existing:
+                        log.info("任务 %s 防重命中，网盘已有 %s，跳过转存",
+                                 task["id"], picked.name)
+                        return self._complete(task, fid=existing, located="dedup",
+                                              mode="targeted", name=picked.name,
+                                              size=picked.size)
+                    chosen = [picked]
+                    result = {"mode": "targeted", "name": picked.name,
+                              "size": picked.size, "path": picked.path}
+                else:
+                    tops = [e for e in entries if "/" not in e.path]
+                    if not tops:
+                        raise PermanentError("分享内容为空")
+                    chosen = tops
+                    result = {"mode": "bulk", "share_entries": len(tops),
+                              "names": [t.path for t in tops][:20]}
 
             save = await provider.save_share_files(
-                pwd_id, stoken, [picked] if picked else tops,
-                to_pdir_fid=await self._target_dir(provider))
+                pwd_id, stoken, chosen, to_pdir_fid=await self._target_dir(provider))
             # save 响应内嵌的 top_fids 是轮询响应缺失时的兜底（实测出现过 null）
             db.set_task_fields(self.db_path, task["id"],
                                quark_task_id=save["task_id"],
@@ -211,6 +222,35 @@ class TransferWorker:
             await provider.close()
 
     # ---- 文件选择 / 防重 / 定位 ----
+
+    async def _pick_files_by_fids(
+            self, provider: QuarkDriveProvider, task: dict,
+            entries: list[ShareFile]) -> tuple[list[ShareFile], dict]:
+        """picks 模式：按任务记录的 fid 列表选取分享文件；逐个防重，
+        网盘已有的跳过。返回 (待转存文件列表, result)。"""
+        want = set(json.loads(task["picks"] or "[]"))
+        videos = [e for e in entries if not e.is_dir and e.fid in want]
+        if not videos:
+            raise PermanentError("所选文件不在分享内容中（分享可能已更新）")
+        chosen = []
+        for f in videos:
+            if await self._find_duplicate(provider, f):
+                log.info("任务 %s 防重命中 %s，跳过", task["id"], f.name)
+            else:
+                chosen.append(f)
+        result = {"mode": "picks",
+                  "names": [f.path for f in videos][:50],
+                  "skipped": [f.path for f in videos if f not in chosen]}
+        return chosen, result
+
+    def _complete_picks_dedup(self, task: dict) -> None:
+        """picks 模式全部防重命中：无需转存，直接 COMPLETED。"""
+        db.set_task_fields(self.db_path, task["id"], target_fid="",
+                           result_json=json.dumps(
+                               {"mode": "picks", "located": "dedup", "fid": ""},
+                               ensure_ascii=False))
+        db.update_task_status(self.db_path, task["id"], "COMPLETED",
+                              error="网盘已有所选文件，跳过重复转存")
 
     async def _load_meta(self, task: dict) -> VideoMeta:
         meta = await fetch_meta(task["imdb_id"], task["video_type"], self.db_path)
@@ -297,7 +337,7 @@ class TransferWorker:
                     located = "save_as_multi"
                 else:
                     raise PermanentError("转存完成但未能在网盘定位到文件")
-        else:  # bulk/whole：整包落盘，播放定位交给 Stream 匹配，不锚定单文件
+        else:  # bulk/picks：多文件落盘，播放定位交给 Stream 匹配，不锚定单文件
             found: list[CloudFile] = []
             if not top_fids:
                 found = await self._search_safe(provider, task["title"])
@@ -316,7 +356,7 @@ class TransferWorker:
                                result, fid=fid, located=located,
                                top_fids=top_fids), ensure_ascii=False))
         db.update_task_status(self.db_path, task["id"], "COMPLETED",
-                              error="转存完成，请在 Stremio 中刷新片源播放")
+                              error="转存完成")
         log.info("任务 %s COMPLETED fid=%s mode=%s located=%s",
                  task["id"], fid, mode, located)
 
@@ -333,7 +373,7 @@ class TransferWorker:
                                dict(result, fid=fid, located=located),
                                ensure_ascii=False))
         db.update_task_status(self.db_path, task["id"], "COMPLETED",
-                              error="转存完成，请在 Stremio 中刷新片源播放")
+                              error="转存完成")
 
     # ---- 错误处理 ----
 

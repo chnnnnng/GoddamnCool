@@ -16,7 +16,7 @@ async def manifest():
     return {
         "id": config.ADDON_ID,
         "version": config.ADDON_VERSION,
-        "name": config.ADDON_NAME,
+        "name": config.APP_NAME,  # Add-on 显示名与页面标题统一（.env APP_NAME 可改）
         "description": config.ADDON_DESCRIPTION,
         "contactEmail": config.ADDON_CONTACT_EMAIL,
         "resources": ["stream"],

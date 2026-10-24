@@ -34,7 +34,9 @@ WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 
 ADDON_ID = "community.quark.stremio"
 ADDON_VERSION = "0.2.0"
-ADDON_NAME = "夸克网盘"
+# 产品名称：页面标题 / 顶栏品牌 / Stremio Add-on 名称统一使用（.env APP_NAME 可改）
+APP_NAME: str = os.environ.get("APP_NAME", "GoddamnCool!")
+ADDON_NAME = APP_NAME
 ADDON_DESCRIPTION = "在 Stremio 中播放您个人夸克网盘内的影视资源（仅限自有内容）"
 ADDON_CONTACT_EMAIL = ""
 
@@ -63,13 +65,17 @@ CHECKTMDB_HOSTS_URL = ("https://cdn.jsdelivr.net/gh/cnwikee/CheckTMDB@main/"
 PANSOU_BASE_URL: str = os.environ.get("PANSOU_BASE_URL", "https://so.252035.xyz").rstrip("/")
 SEARCH_TIMEOUT: float = float(os.environ.get("SEARCH_TIMEOUT", "25"))
 SEARCH_LIMIT: int = int(os.environ.get("SEARCH_LIMIT", "30"))
+# 搜索结果与分享详情缓存有效期（秒，默认 1 天）；0 关闭缓存
+SEARCH_CACHE_TTL: float = float(os.environ.get("SEARCH_CACHE_TTL", str(86400)))
+# 搜索后对"有效"候选做内容解析（详情直显 + 无视频排除）的最大条数
+INSPECT_LIMIT: int = int(os.environ.get("INSPECT_LIMIT", "12"))
 
 # 转存 Worker（阶段 4）：目标目录、扫描/轮询节奏、超时与重试上限
 TRANSFER_DIR: str = os.environ.get("TRANSFER_DIR", "GODDAMNCOOL")
 TRANSFER_SCAN_INTERVAL: float = float(os.environ.get("TRANSFER_SCAN_INTERVAL", "10"))
 TRANSFER_POLL_INTERVAL: float = float(os.environ.get("TRANSFER_POLL_INTERVAL", "2"))
-TRANSFER_TASK_TIMEOUT: float = float(os.environ.get("TRANSFER_TASK_TIMEOUT", "600"))
-TRANSFER_MAX_ATTEMPTS: int = int(os.environ.get("TRANSFER_MAX_ATTEMPTS", "3"))
+TRANSFER_TASK_TIMEOUT: float = float(os.environ.get("TRANSFER_TASK_TIMEOUT", "60"))
+TRANSFER_MAX_ATTEMPTS: int = int(os.environ.get("TRANSFER_MAX_ATTEMPTS", "2"))
 
 
 def validate() -> list[str]:

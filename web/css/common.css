@@ -17,7 +17,7 @@
   --warn-bg: #372a0e; --warn-fg: #fbbf24;
   --err-bg: #3a151a; --err-fg: #f87171;
   --dim-bg: #1a2620; --dim-fg: #8aa392;
-  --radius: 12px;
+  --radius: 2px;   /* 硬朗风格：极小圆角 */
   --focus-ring: 0 0 0 3px rgba(52, 216, 115, .5);
 }
 * { box-sizing: border-box; }
@@ -32,15 +32,15 @@ body {
   font-size: 1rem; line-height: 1.55;
 }
 a { color: var(--accent); }
-code { background: var(--card2); padding: 2px 6px; border-radius: 4px; font-size: .9em; }
+code { background: var(--card2); padding: 2px 6px; border-radius: 2px; font-size: .9em; }
 
 /* 顶栏（三页通用导航） */
 .topbar { display: flex; align-items: center; gap: 12px;
           max-width: 1100px; margin: 0 auto; padding: 16px 16px 0; }
 .brand { font-weight: 700; font-size: 1.15rem; color: var(--accent);
          text-decoration: none; display: inline-flex; gap: 8px; align-items: center;
-         padding: 4px 6px; border-radius: 8px; }
-.brand .dot { width: .7em; height: .7em; border-radius: 50%;
+         padding: 4px 6px; border-radius: 2px; }
+.brand .dot { width: .7em; height: .7em; border-radius: 2px;
               background: var(--accent); box-shadow: 0 0 10px var(--accent); }
 .topbar .spacer { flex: 1; }
 .topbar .meta { margin: 0; }
@@ -55,7 +55,7 @@ h1 { font-size: 1.25rem; margin: 0 0 10px; }
 /* 按钮 / 链接按钮：触摸目标 >= 44px */
 button, a.button {
   background: var(--accent-strong); color: var(--accent-ink); border: 0;
-  border-radius: 10px; padding: 10px 20px; min-height: 44px;
+  border-radius: 2px; padding: 10px 20px; min-height: 44px;
   font-size: .9rem; font-weight: 600; cursor: pointer; margin-right: 8px;
   display: inline-flex; align-items: center; justify-content: center;
   text-decoration: none; line-height: 1.2;
@@ -73,7 +73,7 @@ button:focus, a:focus, input:focus, textarea:focus,
 /* 表单控件 */
 input, textarea {
   background: var(--card2); color: var(--text); border: 1px solid var(--line);
-  border-radius: 10px; padding: 10px 12px; font-size: .95rem;
+  border-radius: 2px; padding: 10px 12px; font-size: .95rem;
   width: 100%; min-height: 44px;
 }
 input::placeholder, textarea::placeholder { color: #5f7768; }
@@ -82,13 +82,13 @@ label { display: block; margin: 12px 0 6px; color: var(--dim); font-size: .85rem
 form button[type="submit"] { margin-top: 14px; }
 
 /* 消息提示 */
-.msg { margin: 12px 0 0; padding: 10px 14px; border-radius: 10px; display: none;
+.msg { margin: 12px 0 0; padding: 10px 14px; border-radius: 2px; display: none;
        font-size: .9rem; }
 .msg.ok { background: var(--ok-bg); color: var(--ok-fg); display: block; }
 .msg.err { background: var(--err-bg); color: var(--err-fg); display: block; }
 
 /* 任务状态徽章 */
-.status { display: inline-block; padding: 6px 16px; border-radius: 999px;
+.status { display: inline-block; padding: 6px 16px; border-radius: 2px;
           font-weight: 600; font-size: .95rem; }
 .s-PENDING, .s-SUBMITTING, .s-PROCESSING { background: var(--warn-bg); color: var(--warn-fg); }
 .s-COMPLETED { background: var(--ok-bg); color: var(--ok-fg); }

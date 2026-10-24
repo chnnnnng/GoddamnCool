@@ -1,4 +1,5 @@
 // 转存任务页：读取路径中的任务 ID，轮询 /api/task/{id} 渲染六态状态。
+// 统一展示转存结果，不再区分是否关联 Stremio 影片。
 const taskId = location.pathname.split('/').pop();
 const STATUS_TEXT = {PENDING: '等待执行', SUBMITTING: '正在提交转存',
                      PROCESSING: '转存处理中', COMPLETED: '转存完成',
@@ -31,6 +32,8 @@ function render(t) {
   if (t.status === 'COMPLETED' && (res.name || res.mode)) {
     if (res.mode === 'bulk')
       rows.push(row('转存方式', '整个分享（' + (res.share_entries || '?') + ' 项）'));
+    else if (res.mode === 'picks')
+      rows.push(row('转存方式', '所选文件（' + ((res.names || []).length || '?') + ' 项）'));
     else if (res.name)
       rows.push(row('转存文件', res.name + (res.fid ? '　(fid: ' + res.fid + ')' : '')));
     if (t.target_fid) rows.push(row('网盘 fid', t.target_fid));
@@ -39,34 +42,17 @@ function render(t) {
   for (const [a, b] of rows) { dl.appendChild(a); dl.appendChild(b); }
   body.appendChild(dl);
 
-  if (t.status === 'COMPLETED' && t.video_type && t.imdb_id) {
-    // 仅锚定影片的任务提供 Stremio 播放入口；独立转存任务无影片关联
-    const box = document.createElement('div'); box.style.marginTop = '16px';
-    const ep = (t.video_type === 'series' && t.season != null && t.episode != null)
-      ? '/' + t.season + '/' + t.episode : '';
-    const play = document.createElement('a');
-    play.className = 'button'; play.textContent = '在 Stremio 中播放';
-    play.href = 'stremio://detail/' + t.video_type + '/' + t.imdb_id + ep;
-    const web = document.createElement('a');
-    web.className = 'button sec'; web.textContent = '网页版 Stremio';
-    web.href = 'https://web.stremio.com/#/detail/' + t.video_type + '/'
-      + t.imdb_id + ep; web.target = '_blank'; web.rel = 'noopener';
-    const tip = document.createElement('span'); tip.className = 'meta';
-    tip.textContent = ' 若客户端未响应，请在 Stremio 中刷新该片源重新获取播放流。';
-    box.appendChild(play); box.appendChild(document.createTextNode(' '));
-    box.appendChild(web); box.appendChild(tip);
-    body.appendChild(box);
-  } else if (t.status === 'COMPLETED') {
+  if (t.status === 'COMPLETED') {
     const tip = document.createElement('div'); tip.className = 'meta';
     tip.style.marginTop = '14px';
-    tip.textContent = '独立转存任务（未关联 Stremio 影片）：文件已保存到网盘根目录 '
-      + 'GODDAMNCOOL 文件夹，可在夸克网盘中直接播放。';
+    tip.textContent = '文件已保存到网盘根目录「' + (t.save_dir || 'GODDAMNCOOL')
+      + '」文件夹，可在网盘中直接查看/播放。';
     body.appendChild(tip);
   }
   const note = document.createElement('div');
   note.className = 'meta';
-  note.textContent = '任务由后台 Worker 自动执行（解析分享 → 选片 → 转存 → 定位文件），'
-    + '完成后回到 Stremio 刷新片源即可播放。';
+  note.textContent = '任务由后台 Worker 自动执行：解析分享 → 选取文件 → 防重 → 转存。'
+    + '页面每 5 秒自动刷新，可留在本页等待结果。';
   body.appendChild(note);
 }
 async function tick() {

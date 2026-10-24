@@ -3,13 +3,13 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>网盘资源搜索</title>
+<title>{{APP_NAME}} · 网盘资源搜索</title>
 <link rel="stylesheet" href="/static/css/common.css">
 <link rel="stylesheet" href="/static/css/search.css">
 </head>
 <body>
 <header class="topbar">
-  <a class="brand" href="/search"><span class="dot"></span>夸克搜转</a>
+  <a class="brand" href="/search"><span class="dot"></span>{{APP_NAME}}</a>
   <span class="spacer"></span>
   <a class="button sec" href="/setup">账号绑定</a>
 </header>
@@ -25,6 +25,15 @@
   <div id="msg" class="msg"></div>
   <div class="meta foot" id="foot"></div>
 </main>
+<div id="modal" class="modal" hidden>
+  <div class="mbox" role="dialog" aria-modal="true">
+    <div class="mhead">
+      <span class="mtitle" id="mtitle"></span>
+      <button class="sec mclose" id="mclose" type="button">关闭</button>
+    </div>
+    <div class="mbody" id="mbody"></div>
+  </div>
+</div>
 <script src="/static/js/common.js"></script>
 <script src="/static/js/spatial-nav.js"></script>
 <script src="/static/js/search.js"></script>

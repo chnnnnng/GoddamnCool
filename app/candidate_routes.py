@@ -17,7 +17,7 @@
 import hmac
 
 from fastapi import APIRouter, Request
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import JSONResponse
 
 from . import config, db
 from .tmdb import fetch_meta
@@ -62,12 +62,12 @@ def _parse_disks(raw: str) -> list[str] | None:
     return disks
 
 
-@router.get("/search", response_class=FileResponse)
+@router.get("/search")
 async def search_page():
     return page("search.html")
 
 
-@router.get("/candidates", response_class=FileResponse)
+@router.get("/candidates")
 async def candidates_page():
     """兼容旧入口（Stremio externalUrl / 旧书签）：与 /search 同页。"""
     return page("search.html")
@@ -97,6 +97,7 @@ async def candidates_search(request: Request, vtype: str = "movie", id: str = ""
             "source": c.source, "published": c.published,
             "provider": c.provider, "disk": c.disk, "score": c.score,
             "alive_state": c.alive_state, "alive_summary": c.alive_summary,
+            "detail": c.detail,  # 有效候选的内容摘要（直显）；完整文件列表在 modal 用
         } for c in cands],
         "errors": errors,
     }
@@ -121,8 +122,19 @@ async def candidates_confirm(request: Request):
         return JSONResponse({"detail": "分享链接无效（仅支持 pan.quark.cn 分享链接）"},
                             status_code=400)
     mode = body.get("mode") or "episode"
-    if mode not in ("episode", "whole"):
-        return JSONResponse({"detail": "mode 参数无效（episode/whole）"}, status_code=400)
+    if mode not in ("episode", "whole", "picks"):
+        return JSONResponse({"detail": "mode 参数无效（episode/whole/picks）"},
+                            status_code=400)
+    # picks 模式：所选文件 fid 列表（多选转存），1..50 个非空短字符串
+    picks: list[str] | None = None
+    if mode == "picks":
+        raw = body.get("fids")
+        if not isinstance(raw, list):
+            return JSONResponse({"detail": "picks 模式必须提供 fids 列表"},
+                                status_code=400)
+        picks = [str(f).strip() for f in raw if str(f).strip()][:50]
+        if not picks or any(len(f) > 64 for f in picks):
+            return JSONResponse({"detail": "fids 列表无效"}, status_code=400)
     if video_id:
         # Stremio 锚定模式：季集来自影片 ID，标题以 TMDB 为准
         imdb_id, season, episode = parse_video_id(video_id)
@@ -141,17 +153,19 @@ async def candidates_confirm(request: Request):
             except (TypeError, ValueError):
                 return JSONResponse({"detail": "season/episode 必须是整数"}, status_code=400)
         title = (body.get("title") or "").strip()[:100] or "外部资源"
-    # whole（转存完整剧集）：任务不锚定季集，整包落盘；episode 仅转存所选集
+    # whole（转存完整剧集）：任务不锚定季集，整包落盘；
+    # picks（转存所选剧集，可多选）：任务不锚定季集，按 fid 列表转存；
+    # episode 仅转存所选单集
     task, created = db.create_task(
         config.DB_PATH, vtype=vtype, imdb_id=imdb_id,
-        season=None if mode == "whole" else season,
-        episode=None if mode == "whole" else episode,
+        season=None if mode in ("whole", "picks") else season,
+        episode=None if mode in ("whole", "picks") else episode,
         title=title,
         candidate_title=(body.get("title") or "")[:300],
         share_url=share_url,
         passcode=(body.get("passcode") or "")[:32],
         source=(body.get("source") or "")[:100],
-        mode=mode,
+        mode=mode, picks=picks,
     )
     return {"task_id": task["id"], "created": created, "status": task["status"]}
 
@@ -204,7 +218,7 @@ async def candidates_verify(request: Request):
     return {"results": await candidate_service.verify_links(items)}
 
 
-@router.get("/task/{task_id}", response_class=FileResponse)
+@router.get("/task/{task_id}")
 async def task_page(task_id: str):
     return page("task.html")
 
@@ -217,4 +231,5 @@ async def task_api(request: Request, task_id: str):
     if task is None:
         return JSONResponse({"detail": "任务不存在"}, status_code=404)
     task["status_text"] = _STATUS_TEXT.get(task["status"], task["status"])
+    task["save_dir"] = config.TRANSFER_DIR  # 落盘目录名（任务页展示用）
     return task

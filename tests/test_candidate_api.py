@@ -1,4 +1,5 @@
 """候选资源网页 API 与转存任务创建测试（阶段 3）。"""
+import json
 import os
 import re
 
@@ -662,4 +663,154 @@ def test_setup_submit_ok_saves_cookie(tmp_db, monkeypatch):
                                     "cookie": '  "kps=1; __puus=x"  '})
     assert r.status_code == 200 and r.json()["ok"] is True
     assert db.load_cookie(tmp_db) == "kps=1; __puus=x"  # 引号与空白已剥离
+
+
+# ---------- 阶段 7：搜索缓存（1 天） ----------
+
+async def test_search_result_cached_one_day(tmp_db, monkeypatch):
+    """同参数第二次搜索命中 kv_cache，不再请求外部来源；候选内容一致。"""
+    calls = patch_real_search(monkeypatch, tmp_db, "余罪", "Yu Zui")
+    svc = CandidateService(db_path=tmp_db)
+    m1, c1, e1, kw1 = await svc.search("series", "tt5925192")
+    assert len(calls) == 2                      # 中英名各实搜一次
+    m2, c2, e2, kw2 = await svc.search("series", "tt5925192")
+    assert len(calls) == 2                      # 未新增来源请求
+    assert [c.share_url for c in c2] == [c.share_url for c in c1]
+    assert kw2 == kw1 and e2 == ""
+    assert (m2.id if m2 else None) == (m1.id if m1 else None)
+
+
+async def test_search_cache_disabled_when_ttl_zero(tmp_db, monkeypatch):
+    """SEARCH_CACHE_TTL=0：关闭缓存，每次都实搜。"""
+    calls = patch_real_search(monkeypatch, tmp_db, "余罪", "Yu Zui")
+    monkeypatch.setattr(config, "SEARCH_CACHE_TTL", 0)
+    svc = CandidateService(db_path=tmp_db)
+    await svc.search("series", "tt5925192")
+    await svc.search("series", "tt5925192")
+    assert len(calls) == 4                      # 两次都实搜
+
+
+async def test_search_cache_distinguishes_disks(tmp_db, monkeypatch):
+    """不同 disks 参数 → 不同缓存键（默认夸克 ≠ 全部网盘）。"""
+    calls = patch_real_search(monkeypatch, tmp_db, "FRIENDS")
+    svc = CandidateService(db_path=tmp_db)
+    await svc.search("series", "tt5925192", disks=None)
+    await svc.search("series", "tt5925192", disks=[])
+    assert len(calls) == 2                      # 缓存键不同，各实搜一轮
+
+
+# ---------- 阶段 7：内容详情直显 + 无视频文件排除 ----------
+
+async def test_search_marks_no_video_content_bad(tmp_db, monkeypatch):
+    """有效链接但内容里没有任何视频文件 → 标记 bad（"内容无视频文件"）。"""
+    from app import candidate_service as cs_mod
+    from app.providers.base import ShareFile
+
+    patch_real_search(monkeypatch, tmp_db, "FRIENDS")
+    db.save_cookie(tmp_db, "c=1")
+
+    class FakeProvider:
+        def __init__(self, cookie=None, db_path=None):
+            pass
+
+        async def get_share_stoken(self, pwd_id, passcode=""):
+            return "st"
+
+        async def list_share_files(self, pwd_id, stoken):
+            return [ShareFile(fid="f1", name="说明.txt", size=5, is_dir=False,
+                              fid_token="t1", path="说明.txt")]
+
+        async def close(self):
+            pass
+
+    monkeypatch.setattr(cs_mod, "QuarkDriveProvider", FakeProvider)
+    svc = cs_mod.CandidateService(db_path=tmp_db)
+    m, cands, errs, kw = await svc.search("series", "tt5925192")
+    target = next(c for c in cands if c.share_url == URL_A)
+    assert target.alive_state == "bad"           # 从"有效"中排除
+    assert target.alive_summary == "内容无视频文件"
+    assert target.detail is not None
+    ok_any = [c for c in cands if c.alive_state == "ok"]
+    assert all(c.share_url != URL_A for c in ok_any)
+
+
+async def test_inspect_share_cached_one_day(tmp_db, monkeypatch):
+    """inspect 结果缓存：同链接第二次解析不再请求网盘。"""
+    from app import candidate_service as cs_mod
+    from app.providers.base import ShareFile
+
+    db.save_cookie(tmp_db, "c=1")
+    calls = {"n": 0}
+
+    class FakeProvider:
+        def __init__(self, cookie=None, db_path=None):
+            pass
+
+        async def get_share_stoken(self, pwd_id, passcode=""):
+            calls["n"] += 1
+            return "st"
+
+        async def list_share_files(self, pwd_id, stoken):
+            return [ShareFile(fid="f1", name="A.S01E01.mp4", size=100,
+                              is_dir=False, fid_token="t1", path="A.S01E01.mp4")]
+
+        async def close(self):
+            pass
+
+    monkeypatch.setattr(cs_mod, "QuarkDriveProvider", FakeProvider)
+    svc = cs_mod.CandidateService(db_path=tmp_db)
+    d1 = await svc.inspect_share(GOOD_URL)
+    d2 = await svc.inspect_share(GOOD_URL)
+    assert calls["n"] == 1                       # 第二次走缓存
+    assert d1 == d2 and d1["video_count"] == 1
+
+
+# ---------- 阶段 7：picks 多选转存 ----------
+
+def test_confirm_picks_mode(tmp_db, monkeypatch):
+    """picks 模式：fids 必填；fid 列表（排序后 JSON）参与幂等键，与 whole 并存。"""
+    patch_fetch_meta(monkeypatch)
+    # 缺 fids → 400
+    r = _confirm(mode="picks")
+    assert r.status_code == 400 and "fids" in r.json()["detail"]
+    r = _confirm(mode="picks", fids=[])
+    assert r.status_code == 400
+    # 正常创建：任务不锚定季集，picks 存排序后 JSON
+    r = _confirm(mode="picks", fids=["b" * 32, "a" * 32])
+    assert r.status_code == 200 and r.json()["created"] is True
+    task = db.get_task(tmp_db, r.json()["task_id"])
+    assert task["mode"] == "picks"
+    assert task["season"] is None and task["episode"] is None
+    assert json.loads(task["picks"]) == sorted(["a" * 32, "b" * 32])
+    # 幂等：同 fids（顺序无关）复用活跃任务
+    r2 = _confirm(mode="picks", fids=["a" * 32, "b" * 32])
+    assert r2.json()["created"] is False and r2.json()["task_id"] == task["id"]
+    # 不同 fids → 新任务
+    r3 = _confirm(mode="picks", fids=["a" * 32, "c" * 32])
+    assert r3.json()["created"] is True and r3.json()["task_id"] != task["id"]
+    # 与 whole / episode 任务可并存
+    assert _confirm(mode="whole").json()["created"] is True
+    assert _confirm().json()["created"] is True
+
+
+def test_task_api_includes_save_dir(tmp_db, monkeypatch):
+    patch_fetch_meta(monkeypatch)
+    task_id = _confirm().json()["task_id"]
+    r = client.get(f"/api/task/{task_id}", headers=AUTH)
+    assert r.json()["save_dir"] == config.TRANSFER_DIR
+
+
+# ---------- 阶段 7：产品名称注入（GoddamnCool!） ----------
+
+def test_pages_app_name_injected():
+    for path in PAGES:
+        page = client.get(path).text
+        assert config.APP_NAME in page            # 标题/品牌已注入
+        assert "{{APP_NAME" not in page           # 占位符已全部替换
+
+
+def test_manifest_name_is_app_name():
+    r = client.get("/manifest.json")
+    assert r.status_code == 200
+    assert r.json()["name"] == config.APP_NAME
 

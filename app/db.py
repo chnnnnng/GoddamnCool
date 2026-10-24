@@ -42,6 +42,13 @@ def init(db_path: str, secret_key: str) -> None:
                , PRIMARY KEY (imdb_id, vtype))"""
         )
         c.execute(
+            """CREATE TABLE IF NOT EXISTS kv_cache (
+                   key TEXT PRIMARY KEY,          -- 搜索结果/分享详情等缓存键
+                   value TEXT NOT NULL,           -- JSON 序列化内容
+                   expires_at REAL NOT NULL       -- unix ts，TTL 过期
+               )"""
+        )
+        c.execute(
             """CREATE TABLE IF NOT EXISTS transfer_tasks (
                    id TEXT PRIMARY KEY,               -- uuid4 hex，防猜测遍历
                    video_type TEXT NOT NULL,          -- movie / series
@@ -53,7 +60,8 @@ def init(db_path: str, secret_key: str) -> None:
                    share_url TEXT NOT NULL,
                    passcode TEXT NOT NULL DEFAULT '',
                    source TEXT NOT NULL DEFAULT '',
-                   mode TEXT NOT NULL DEFAULT 'episode',  -- 阶段5：episode 指定集 / whole 整包
+                   mode TEXT NOT NULL DEFAULT 'episode',  -- 阶段5：episode 指定集 / whole 整包 / picks 所选多集
+                   picks TEXT NOT NULL DEFAULT '',    -- 阶段6：picks 模式所选文件 fid 列表（JSON，参与幂等键）
                    status TEXT NOT NULL DEFAULT 'PENDING',
                    error TEXT NOT NULL DEFAULT '',
                    target_fid TEXT NOT NULL DEFAULT '',   -- 阶段4：转存后文件 fid
@@ -70,7 +78,8 @@ def init(db_path: str, secret_key: str) -> None:
                           ("result_json", "TEXT NOT NULL DEFAULT ''"),
                           ("quark_task_id", "TEXT NOT NULL DEFAULT ''"),
                           ("attempts", "INTEGER NOT NULL DEFAULT 0"),
-                          ("mode", "TEXT NOT NULL DEFAULT 'episode'")):
+                          ("mode", "TEXT NOT NULL DEFAULT 'episode'"),
+                          ("picks", "TEXT NOT NULL DEFAULT ''")):
             if col not in cols:
                 c.execute(f"ALTER TABLE transfer_tasks ADD COLUMN {col} {decl}")
 
@@ -106,19 +115,24 @@ def load_cookie(db_path: str) -> str | None:
 def create_task(db_path: str, *, vtype: str, imdb_id: str, season: int | None,
                 episode: int | None, title: str, candidate_title: str,
                 share_url: str, passcode: str = "", source: str = "",
-                mode: str = "episode") -> tuple[dict, bool]:
-    """创建转存任务。幂等：同分享链接 + 同影片/集数存在活跃任务时直接复用。
+                mode: str = "episode", picks: list[str] | None = None) \
+        -> tuple[dict, bool]:
+    """创建转存任务。幂等：同分享链接 + 同影片/集数 + 同 picks 存在活跃任务时直接复用。
 
-    mode="whole" 表示整包转存（season/episode 记为 None）；返回 (task, created)。
+    mode="whole" 表示整包转存（season/episode 记为 None）；
+    mode="picks" 表示按所选 fid 列表转存（picks 排序后 JSON 作为幂等键的一部分）；
+    返回 (task, created)。
     """
+    picks_key = json.dumps(sorted(picks), ensure_ascii=False) if picks else ""
     with _lock, _conn(db_path) as c:
         row = c.execute(
             """SELECT * FROM transfer_tasks
                WHERE share_url = ? AND imdb_id = ?
                  AND IFNULL(season, -1) = IFNULL(?, -1)
                  AND IFNULL(episode, -1) = IFNULL(?, -1)
+                 AND picks = ?
                  AND status IN ('PENDING', 'SUBMITTING', 'PROCESSING')""",
-            (share_url, imdb_id, season, episode),
+            (share_url, imdb_id, season, episode, picks_key),
         ).fetchone()
         if row:
             return dict(row), False
@@ -126,10 +140,10 @@ def create_task(db_path: str, *, vtype: str, imdb_id: str, season: int | None,
         c.execute(
             """INSERT INTO transfer_tasks
                    (id, video_type, imdb_id, season, episode, title,
-                    candidate_title, share_url, passcode, source, mode, status)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING')""",
+                    candidate_title, share_url, passcode, source, mode, picks, status)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING')""",
             (task_id, vtype, imdb_id, season, episode, title,
-             candidate_title, share_url, passcode, source, mode),
+             candidate_title, share_url, passcode, source, mode, picks_key),
         )
     return get_task(db_path, task_id), True
 
@@ -248,3 +262,32 @@ def save_tmdb_meta(db_path: str, imdb_id: str, vtype: str, data: dict) -> None:
                    data = excluded.data, updated_at = excluded.updated_at""",
             (imdb_id, vtype, json.dumps(data, ensure_ascii=False), time.time()),
         )
+
+
+# ---- 通用 KV 缓存（搜索结果 / 分享详情，TTL 过期） ----
+
+def get_cache(db_path: str, key: str) -> object | None:
+    """读取缓存值（JSON 反序列化）；不存在或已过期返回 None。"""
+    with _lock, _conn(db_path) as c:
+        row = c.execute(
+            "SELECT value, expires_at FROM kv_cache WHERE key = ?", (key,)).fetchone()
+    if not row or row["expires_at"] < time.time():
+        return None
+    try:
+        return json.loads(row["value"])
+    except ValueError:
+        return None
+
+
+def set_cache(db_path: str, key: str, value, ttl: float) -> None:
+    """写入缓存（TTL 秒），顺手清理全部过期项。ttl<=0 时为空操作。"""
+    if ttl <= 0:
+        return
+    with _lock, _conn(db_path) as c:
+        c.execute(
+            """INSERT INTO kv_cache (key, value, expires_at) VALUES (?, ?, ?)
+               ON CONFLICT(key) DO UPDATE SET
+                   value = excluded.value, expires_at = excluded.expires_at""",
+            (key, json.dumps(value, ensure_ascii=False), time.time() + ttl),
+        )
+        c.execute("DELETE FROM kv_cache WHERE expires_at < ?", (time.time(),))

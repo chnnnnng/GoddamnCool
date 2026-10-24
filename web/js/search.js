@@ -1,368 +1,370 @@
-// 网盘资源搜索页：独立搜索模式（搜索框 + 网盘筛选 + 结果筛选）与
-// Stremio 锚定模式（URL 带 vtype&id，自动搜 TMDB 双语名）二合一。
-// 动态数据一律 textContent 渲染（common.js 注释的安全约定）。
+/* 网盘资源搜索页（阶段 6/7）：独立搜索模式与 Stremio 锚定模式二合一。
+ * 搜索结果单栏直显内容详情摘要（季集/规格/大小）；「查看内容」弹窗展示完整
+ * 文件清单并提供三种转存方式：全部剧集 / 所选剧集（可多选）/ 当前剧集（仅锚定）。
+ * 默认只显示检测"有效"的结果；TV 端方向键空间导航（spatial-nav.js）。 */
+'use strict';
 const params = new URLSearchParams(location.search);
 const vtype = params.get('vtype') || '';
 const vid = params.get('id') || '';
-const anchored = !!(vtype && vid);  // Stremio 锚定模式（外部搜索跳转）
+const anchored = !!(vtype && vid);
+const vidParts = vid.split(':');
+const curSeason = vidParts[1] ? Number(vidParts[1]) : null;
+const curEpisode = vidParts[2] ? Number(vidParts[2]) : null;
 
-const DISKS = [
-  ['quark', '夸克', ''], ['all', '全部', 'all'], ['uc', 'UC', 'uc'],
-  ['baidu', '百度', 'baidu'], ['aliyun', '阿里', 'aliyun'], ['xunlei', '迅雷', 'xunlei'],
-  ['115', '115', '115'], ['123', '123', '123'], ['tianyi', '天翼', 'tianyi'],
-];
-const DISK_NAMES = { quark: '夸克', uc: 'UC网盘', baidu: '百度网盘', aliyun: '阿里云盘',
-                     xunlei: '迅雷云盘', 115: '115网盘', 123: '123网盘', tianyi: '天翼云盘' };
-const ALIVE_FILTERS = [['all', '全部'], ['ok', '有效'], ['locked', '需提取码'],
-                       ['bad', '已失效'], ['none', '未检测']];
-const V_TEXT = { ok: '有效', bad: '已失效', locked: '需提取码',
-                 unsupported: '暂不支持', uncertain: '不确定' };
+const DISKS = ['quark', 'all', 'uc', 'baidu', 'aliyun', 'xunlei', '115', '123', 'tianyi'];
+const DISK_NAMES = { quark: '夸克', all: '全部', uc: 'UC', baidu: '百度', aliyun: '阿里',
+  xunlei: '迅雷', 115: '115', 123: '123', tianyi: '天翼' };
+const ALIVE_FILTERS = [['ok', '有效'], ['locked', '需提取码'], ['bad', '已失效'],
+  ['none', '未检测'], ['all', '全部']];
+const V_TEXT = { ok: '有效', bad: '已失效', locked: '需提取码', unsupported: '不支持',
+  uncertain: '不确定' };
 
-let curDisk = 'quark';      // 当前网盘筛选（服务端重搜）
-let curAlive = 'all';       // 当前存活筛选（客户端过滤）
-let lastCands = [];         // 最近一次搜索结果（存活筛选用）
-let lastMeta = null;        // 最近一次影片元数据（锚定模式）
+let curDisk = 'quark';
+let curAlive = 'ok';          // 默认仅展示检测"有效"的结果
+let lastCands = [];
+let lastMeta = null;
 let lastKeyword = '';
+let lastErrors = '';
+let verifyTimer = 0;
+let modalCand = null;         // 弹窗当前候选
+let pickedFids = new Set();   // 弹窗内多选的文件 fid
 
-const kwEl = document.getElementById('kw');
-const metaEl = document.getElementById('meta');
-const listEl = document.getElementById('list');
+const $ = (id) => document.getElementById(id);
+const kwEl = $('kw'), btnEl = $('btn'), metaEl = $('meta'), listEl = $('list'),
+  diskEl = $('diskchips'), aliveEl = $('alivechips'), msgEl = $('msg'),
+  footEl = $('foot'), modalEl = $('modal'), mtitleEl = $('mtitle'),
+  mbodyEl = $('mbody'), mcloseEl = $('mclose');
 
-// ---- 筛选 chips ----
-function buildChips(boxId, items, cur, onpick) {
-  const box = document.getElementById(boxId);
-  box.textContent = '';
-  for (const [val, label] of items) {
-    const b = el('button', 'chip' + (val === cur ? ' on' : ''), label);
-    b.onclick = () => onpick(val);
-    box.appendChild(b);
-  }
+function el(tag, cls, text) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text != null) e.textContent = text;
+  return e;
 }
-function renderDiskChips() { buildChips('diskchips', DISKS, curDisk, (v) => {
-  if (curDisk === v) return;
-  curDisk = v;
-  renderDiskChips();
-  if (kwEl.value.trim() || anchored) dosearch();  // 切网盘 → 服务端重搜
-}); }
-function renderAliveChips() { buildChips('alivechips', ALIVE_FILTERS, curAlive, (v) => {
-  curAlive = v;
-  renderAliveChips();
-  renderResults();
-}); }
+function showMsg(text, ok) {
+  msgEl.textContent = text || '';
+  msgEl.className = 'msg ' + (ok === null ? 'null' : ok ? 'ok' : 'err');
+}
+function pad(n) { return String(n).padStart(2, '0'); }
+function labelOf(c) {
+  return `S${pad(c.season)}E${pad(c.episode)}`;
+}
 
-// ---- 搜索 ----
+/* ---- 筛选 chips ---- */
+function buildChips() {
+  for (const d of DISKS) {
+    const c = el('button', 'chip', DISK_NAMES[d]);
+    c.type = 'button';
+    c.dataset.disk = d;
+    c.onclick = () => { curDisk = d; buildChips(); if (lastCands.length) renderResults(); };
+    diskEl.appendChild(c);
+  }
+  buildAliveChips();
+}
+function buildAliveChips() {
+  Array.from(aliveEl.querySelectorAll('.chip')).forEach((x) => x.remove());
+  for (const [k, text] of ALIVE_FILTERS) {
+    const c = el('button', 'chip', text);
+    c.type = 'button';
+    c.dataset.alive = k;
+    c.onclick = () => { curAlive = k; buildAliveChips(); if (lastCands.length) renderResults(); };
+    aliveEl.appendChild(c);
+  }
+  aliveEl.querySelectorAll('.chip').forEach((x) =>
+    x.classList.toggle('on', x.dataset.alive === curAlive));
+}
+
+/* ---- 搜索 ---- */
 async function dosearch() {
   const kw = kwEl.value.trim();
-  if (!anchored && !kw) { showMsg('请输入搜索关键词', false); return; }
-  listEl.textContent = '';
-  lastCands = [];
+  if (!kw && !anchored) { kwEl.focus(); return; }  // 锚定模式空关键词由服务端 TMDB 双语名补齐
+  btnEl.disabled = true;
+  btnEl.textContent = '搜索中…';
   metaEl.textContent = '搜索中…';
-  showMsg('', null);
-  const qs = new URLSearchParams();
-  if (anchored) { qs.set('vtype', vtype); qs.set('id', vid); }
-  if (kw) qs.set('kw', kw);
-  qs.set('disks', (DISKS.find((d) => d[0] === curDisk) || DISKS[0])[2]);
-  let data;
-  try {
-    data = await api('/api/candidates/search?' + qs.toString());
-  } catch (e) {
-    metaEl.textContent = e.message;
-    return;
-  }
-  kwEl.value = data.keyword || kw;
-  lastMeta = data.meta;
-  lastKeyword = data.keyword || kw;
-  lastCands = data.candidates || [];
-  if (data.errors) showMsg('部分来源异常：' + data.errors, false);
-  renderResults();
-  // 服务端搜索已带存活检测；万一缺失则兜底补检
-  verifyLinks(lastCands.filter((c) => c.disk === 'quark' && !c.alive_state));
-}
-
-function metaText() {
-  const n = visibleCands().length;
-  const total = lastCands.length;
-  let head = '';
-  if (anchored && lastMeta) {
-    head = '《' + lastMeta.title + '》' + (lastMeta.year ? ' (' + lastMeta.year + ')' : '') + ' · ';
-  }
-  return head + (lastKeyword ? '关键词「' + lastKeyword + '」 · ' : '')
-    + '共 ' + total + ' 个候选' + (n !== total ? '，筛选后显示 ' + n + ' 个' : '');
-}
-
-function visibleCands() {
-  if (curAlive === 'all') return lastCands;
-  if (curAlive === 'none') return lastCands.filter((c) => !c.alive_state);
-  return lastCands.filter((c) => c.alive_state === curAlive);
-}
-
-function renderResults() {
   listEl.textContent = '';
-  const cands = visibleCands();
-  metaEl.textContent = lastCands.length ? metaText()
-    : (anchored ? '加载中…' : '输入关键词开始搜索网盘资源');
-  if (!lastCands.length) {
-    if (anchored) listEl.appendChild(el('div', 'meta',
-      '未搜索到候选资源。可尝试修改上方关键词（如改用中文片名）后重新搜索。'));
-    return;
+  showMsg('', null);
+  clearTimeout(verifyTimer);
+  try {
+    const q = new URLSearchParams({ kw });
+    if (anchored) { q.set('vtype', vtype); q.set('id', vid); }
+    if (curDisk !== 'quark') q.set('disks', curDisk);
+    const data = await api(`/api/candidates/search?${q}`);
+    lastCands = data.candidates || [];
+    lastMeta = data.meta;
+    lastKeyword = data.keyword || kw;
+    if (!kw) kwEl.value = lastKeyword;  // 锚定模式自动回填实际使用的关键词
+    lastErrors = (data.errors || '').trim();
+    renderResults();
+    verifyTimer = setTimeout(verifyLinks, 500);
+  } catch (e) {
+    showMsg('搜索失败：' + (e.message || e), false);
+    metaEl.textContent = '';
+  } finally {
+    btnEl.disabled = false;
+    btnEl.textContent = '搜索';
   }
-  if (!cands.length) {
-    listEl.appendChild(el('div', 'meta', '当前筛选条件下无结果，可切换上方「存活」筛选。'));
-    return;
-  }
-  for (const c of cands) listEl.appendChild(renderCard(c));
 }
 
-function renderCard(c) {
-  const card = el('div', 'cand');
-  card.appendChild(el('div', 't', c.title || '(无标题)'));
-  const badges = el('div', 'badges');
-  badges.appendChild(el('span', c.disk === 'quark' ? 'diskq' : '',
-    DISK_NAMES[c.disk] || c.disk));
-  badges.appendChild(el('span', '', '匹配 ' + Math.round((c.score || 0) * 100) + '%'));
-  if (c.source) badges.appendChild(el('span', '', c.source));
-  if (c.published) badges.appendChild(el('span', '', c.published.slice(0, 10)));
-  if (c.passcode) badges.appendChild(el('span', 'warn', '提取码 ' + c.passcode));
-  const vbadge = el('span', 'vstate v-pending', '存活 …');
-  badges.appendChild(vbadge);
-  card.appendChild(badges);
-  const link = el('a', 'link', c.share_url);
-  link.href = c.share_url; link.target = '_blank'; link.rel = 'noopener';
-  card.appendChild(link);
-  const actions = el('div', 'actions');
-  let infoBtn = null;
-  if (c.disk === 'quark') {
-    const btn = el('button', '', '转存到我的网盘');
-    btn.onclick = () => confirmSave(btn, c);
-    actions.appendChild(btn);
-    infoBtn = el('button', 'sec', '查看内容');
-    infoBtn.onclick = () => toggleInspect(infoBtn, c, card);
-    actions.appendChild(infoBtn);
-  } else {
-    actions.appendChild(el('span', 'hint', '非夸克资源：仅支持打开链接手动保存'));
-  }
-  card.appendChild(actions);
-  setAlive(c, c.alive_state || '', aliveText(c, c.alive_state || '', c.alive_summary || ''), vbadge, card, infoBtn);
-  card._cand = c;
-  return card;
-}
-
-// ---- 存活徽章 ----
-function aliveText(c, state, summary) {
-  let t = V_TEXT[state] || state || '未检测';
-  if (state === 'locked') t = c.passcode ? '提取码错误' : '需要提取码';
-  if (summary && state) t += ' · ' + summary;
-  return t;
-}
-function setAlive(c, state, text, vbadge, card, infoBtn) {
-  c.alive_state = state;
-  vbadge.className = 'vstate v-' + (state || 'none');
-  vbadge.textContent = '存活 ' + text;
-  if (state === 'bad') {
-    card.classList.add('dead');
-    if (infoBtn) infoBtn.disabled = true;  // 失效分享无需解析内容
-  }
-}
-async function verifyLinks(cands) {
-  if (!cands.length) return;
-  const cardOf = {};
-  for (const card of listEl.querySelectorAll('.cand')) cardOf[card._cand.share_url] = card;
-  let results = [];
+async function verifyLinks() {
+  const need = lastCands.filter((c) => c.disk === 'quark' && !c.alive_state);
+  if (!need.length) return;
   try {
     const data = await api('/api/candidates/verify', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ items: cands.map((c) => ({
+      body: JSON.stringify({ items: need.map((c) => ({
         share_url: c.share_url, passcode: c.passcode })) }),
     });
-    results = data.results || [];
-  } catch (e) {
-    for (const c of cands) applyAlive(c, 'uncertain', '检测失败');
+    const by = {};
+    (data.results || []).forEach((r) => { by[r.share_url] = r; });
+    for (const c of lastCands) {
+      const r = by[c.share_url];
+      if (r && r.state) { c.alive_state = r.state; c.alive_summary = r.summary || ''; }
+    }
+    if (lastCands.length) renderResults();
+  } catch { /* 兜底失败保持未检测状态 */ }
+}
+
+/* ---- 渲染 ---- */
+function metaText() {
+  const head = lastMeta ? `${lastMeta.title}(${lastMeta.year || ''})` : lastKeyword;
+  let t = `${head} · ${lastCands.length} 候选`;
+  if (lastErrors) t += ` · 部分来源异常：${lastErrors}`;
+  return t;
+}
+
+function renderResults() {
+  metaEl.textContent = metaText();
+  const shown = lastCands.filter((c) => {
+    if (curAlive === 'all') return true;
+    if (curAlive === 'none') return !c.alive_state;
+    return c.alive_state === curAlive;
+  });
+  listEl.textContent = '';
+  if (!shown.length) {
+    listEl.appendChild(el('div', 'empty',
+      lastCands.length ? '当前筛选条件下无结果，可切换上方"存活"筛选。' : '无候选。'));
     return;
   }
-  const byUrl = {};
-  for (const r of results) byUrl[r.share_url] = r;
-  for (const c of cands) {
-    const r = byUrl[c.share_url];
-    if (!r) { applyAlive(c, 'uncertain', '未检测'); continue; }
-    applyAlive(c, r.state, r.summary || '');
+  for (const c of shown) listEl.appendChild(renderCard(c));
+}
+
+function renderCard(c) {
+  const card = el('div', 'cand');
+  if (c.alive_state === 'bad' || c.alive_state === 'unsupported') card.classList.add('dead');
+  card.appendChild(el('div', 'ct', c.title || '(无标题)'));
+  const badges = el('div', 'badges');
+  badges.appendChild(el('span', 'bd', DISK_NAMES[c.disk] || c.disk));
+  if (c.score) badges.appendChild(el('span', 'bd', `匹配 ${Math.round(c.score * 100)}%`));
+  if (c.source) badges.appendChild(el('span', 'bd', c.source));
+  if (c.published) badges.appendChild(el('span', 'bd', c.published.slice(0, 10)));
+  if (c.passcode) badges.appendChild(el('span', 'bd code', `提取码 ${c.passcode}`));
+  const v = el('span', 'vstate ' + (c.alive_state ? 'v-' + c.alive_state : 'v-none'),
+    V_TEXT[c.alive_state] || '未检测');
+  if (c.alive_summary) v.title = c.alive_summary;
+  badges.appendChild(v);
+  card.appendChild(badges);
+
+  // 内容详情摘要直显（后端随搜索返回有效候选的解析结果）
+  if (c.detail) appendDetailSummary(card, c.detail);
+
+  if (c.share_url) {
+    const a = el('a', 'link', c.share_url);
+    a.href = c.share_url;
+    a.target = '_blank';
+    a.rel = 'noreferrer';
+    card.appendChild(a);
   }
-  function applyAlive(c, state, summary) {
-    c.alive_summary = summary;
-    const card = cardOf[c.share_url];
-    if (!card) return;  // 可能已被筛选隐藏
-    const vbadge = card.querySelector('.vstate');
-    const infoBtn = card.querySelector('.actions button.sec');
-    setAlive(c, state, aliveText(c, state, summary), vbadge, card, infoBtn);
+  const actions = el('div', 'actions');
+  if (c.disk === 'quark') {
+    const dead = c.alive_state === 'bad' || c.alive_state === 'unsupported';
+    const save = el('button', 'save', '转存到我的网盘');
+    save.disabled = dead;
+    save.onclick = () => confirmSave(save, c, anchored ? 'episode' : 'whole');
+    actions.appendChild(save);
+    const info = el('button', 'sec', '查看内容');
+    info.disabled = dead;
+    info.onclick = () => openDetail(info, c);
+    actions.appendChild(info);
+  } else {
+    actions.appendChild(el('span', 'hint', '非夸克资源：仅支持打开链接手动保存'));
+  }
+  card.appendChild(actions);
+  return card;
+}
+
+function appendDetailSummary(card, d) {
+  const sum = el('div', 'dsum',
+    `视频 ${d.video_count} 个 · 共 ${d.total_size_h}` +
+    (d.other_count ? ` · 其他文件 ${d.other_count} 个` : ''));
+  card.appendChild(sum);
+  if (d.seasons && d.seasons.length) {
+    const seas = el('div', 'seas');
+    for (const s of d.seasons) {
+      seas.appendChild(el('span', 'seaschip',
+        s.season ? `S${pad(s.season)} · ${s.count} 集 · ${s.size_h}` : `共 ${s.count} 集 · ${s.size_h}`));
+    }
+    card.appendChild(seas);
   }
 }
 
-// ---- 转存（锚定模式带 id；独立模式 share-only 任务） ----
-async function confirmSave(btn, cand, mode = 'episode', targetId = null, extra = {}) {
-  btn.disabled = true;
-  try {
-    const data = await api('/api/candidates/confirm', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(Object.assign({
-        vtype: anchored ? vtype : '',
-        id: targetId || (anchored ? vid : ''),
-        share_url: cand.share_url, passcode: cand.passcode,
-        title: cand.title, source: cand.source, mode: mode,
-      }, extra)),
-    });
-    showMsg('任务已创建' + (data.created ? '' : '（已有进行中的相同任务）') + '，正在跳转…', true);
-    setTimeout(() => { location.href = '/task/' + data.task_id; }, 800);
-  } catch (e) {
-    showMsg('创建失败：' + e.message, false);
-    btn.disabled = false;
-  }
-}
-
-// ---- 分享内容详情：文件规格 + 季集结构 + 整包/单集转存 ----
-const curPart = vid.split(':');
-const curS = curPart[1] ? +curPart[1] : null;
-const curE = curPart[2] ? +curPart[2] : null;
-
-function toggleInspect(btn, cand, card) {
-  if (btn.dataset.open === '1') {
-    const d = card.querySelector('.detail');
-    if (d) d.remove();
-    btn.dataset.open = '';
-    btn.textContent = '查看内容';
-    return;
-  }
-  inspectShare(btn, cand, card);
-}
-
-async function inspectShare(btn, cand, card) {
+/* ---- 查看内容弹窗 ---- */
+async function openDetail(btn, c) {
   btn.disabled = true;
   btn.textContent = '解析中…';
-  let data;
   try {
-    data = await api('/api/candidates/inspect', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ share_url: cand.share_url, passcode: cand.passcode }),
-    });
+    if (!c.detail) {
+      const data = await api('/api/candidates/inspect', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ share_url: c.share_url, passcode: c.passcode }),
+      });
+      c.detail = data;
+    }
+    showModal(c);
   } catch (e) {
-    showMsg('解析失败：' + e.message, false);
+    showMsg('查看内容失败：' + (e.message || e), false);
+  } finally {
     btn.disabled = false;
     btn.textContent = '查看内容';
-    return;
   }
-  btn.disabled = false;
-  btn.dataset.open = '1';
-  btn.textContent = '收起内容';
-  card.appendChild(renderDetail(cand, data));
 }
 
-function specBadges(f) {
-  const sp = f.spec || {};
-  return [sp.resolution, sp.source, sp.codec]
-    .concat(sp.audio || [], sp.subtitle || [], sp.languages || [])
-    .filter(Boolean);
+function showModal(c) {
+  modalCand = c;
+  pickedFids = new Set();
+  mtitleEl.textContent = c.title || '(无标题)';
+  mbodyEl.textContent = '';
+  mbodyEl.appendChild(renderDetail(c, c.detail));
+  modalEl.hidden = false;
+  mcloseEl.focus();
 }
 
-function renderDetail(cand, data) {
-  const box = el('div', 'detail');
-  const head = el('div', 'meta');
-  head.textContent = '视频 ' + data.video_count + ' 个 · 共 ' + data.total_size_h
-    + (data.other_count ? ' · 其他文件 ' + data.other_count + ' 个' : '');
-  box.appendChild(head);
-  if (data.seasons && data.seasons.length) {
-    const chips = el('div', 'badges');
-    for (const s of data.seasons) {
-      chips.appendChild(el('span', '', 'S' + String(s.season).padStart(2, '0')
-        + ' · ' + s.count + ' 集 · ' + s.size_h));
+function hideModal() {
+  modalEl.hidden = true;
+  modalCand = null;
+  pickedFids.clear();
+}
+
+mcloseEl.onclick = hideModal;
+modalEl.addEventListener('click', (e) => { if (e.target === modalEl) hideModal(); });
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && !modalEl.hidden) hideModal();
+});
+
+function isSeriesLike(d) {
+  return (anchored && vtype === 'series') || !!d.is_series;
+}
+
+function renderDetail(c, d) {
+  const isSeries = isSeriesLike(d);
+  const wrap = el('div');
+  wrap.appendChild(el('div', 'dsum',
+    `视频 ${d.video_count} 个 · 共 ${d.total_size_h}` +
+    (d.other_count ? ` · 其他文件 ${d.other_count} 个` : '')));
+  if (d.seasons && d.seasons.length) {
+    const seas = el('div', 'seas');
+    for (const s of d.seasons) {
+      seas.appendChild(el('span', 'seaschip',
+        s.season ? `S${pad(s.season)} · ${s.count} 集 · ${s.size_h}` : `共 ${s.count} 集 · ${s.size_h}`));
     }
-    box.appendChild(chips);
+    wrap.appendChild(seas);
   }
-  // 文件列表：点选行作为"仅转存所选剧集"的目标集
-  let target = null;
-  let part = null;   // 按钮在文件行之后创建，点选行时刷新其文字
-  const rows = [];
+
+  const picksBtn = el('button', 'save', '转存所选剧集');
+  picksBtn.type = 'button';
+  picksBtn.disabled = true;
+
   const list = el('div', 'filelist');
-  const files = data.files || [];
-  const epTag = (f) => (f.season != null ? 'S' + String(f.season).padStart(2, '0') : '')
-    + (f.episode != null ? 'E' + String(f.episode).padStart(2, '0') : '');
-  const setTarget = (row, f) => {
-    for (const r of rows) r.classList.remove('sel');
-    row.classList.add('sel');
-    target = { s: f.season, e: f.episode };
-    if (part && f.episode != null) part.textContent = '仅转存所选剧集（' + epTag(f) + '）';
-  };
-  const buildRow = (f) => {
+  for (const f of (d.files || [])) {
     const row = el('div', 'frow');
-    row.tabIndex = 0;                        // TV 遥控器可聚焦，Enter/空格点选
-    row._ep = { s: f.season, e: f.episode }; // 默认选中匹配用
-    if (f.season != null || f.episode != null) {
-      row.appendChild(el('span', 'ep', epTag(f)));
-    }
-    const nm = el('span', 'fname', f.path || f.name);
-    nm.title = f.path || f.name;
+    row.tabIndex = 0;
+    row._fid = f.fid;
+    row._ep = f.season != null || f.episode != null
+      ? `${f.season != null ? 'S' + pad(f.season) : ''}${f.episode != null ? 'E' + pad(f.episode) : ''}`
+      : '';
+    const nm = el('div', 'nm', f.path || f.name);
     row.appendChild(nm);
-    for (const b of specBadges(f)) row.appendChild(el('span', 'spec', b));
-    row.appendChild(el('span', 'fsize', f.size_h));
-    row.onclick = () => setTarget(row, f);
-    rows.push(row);
-    return row;
-  };
-  for (const f of files.slice(0, 20)) list.appendChild(buildRow(f));
-  if (files.length > 20) {
-    const more = el('div', 'meta', '… 其余 ' + (files.length - 20) + ' 个文件');
-    more.style.padding = '6px 10px';
-    const exp = el('button', 'sec', '展开全部');
-    exp.onclick = () => {
-      for (const f of files.slice(20)) list.appendChild(buildRow(f));
-      more.remove();
+    row.appendChild(el('div', 'fmeta',
+      `${f.size_h}${f.spec && f.spec.length ? ' · ' + f.spec.join(' / ') : ''}${row._ep ? ' · ' + row._ep : ''}`));
+    if (row._ep) row.appendChild(el('span', 'ep', row._ep));
+    const toggle = () => {
+      if (pickedFids.has(f.fid)) pickedFids.delete(f.fid);
+      else pickedFids.add(f.fid);
+      row.classList.toggle('sel', pickedFids.has(f.fid));
+      picksBtn.disabled = pickedFids.size === 0;
+      picksBtn.textContent = pickedFids.size
+        ? `转存所选剧集（${pickedFids.size}）` : '转存所选剧集';
     };
-    more.appendChild(exp);
-    list.appendChild(more);
+    row.onclick = toggle;
+    list.appendChild(row);
   }
-  box.appendChild(list);
-  const btns = el('div', 'actions');
-  const isSeriesLike = (anchored && vtype === 'series') || data.is_series;
-  if (isSeriesLike && files.length) {
-    const whole = el('button', '', '转存完整剧集');
-    whole.onclick = () => confirmSave(whole, cand, 'whole', null);
-    part = el('button', 'sec', '仅转存所选剧集');
-    part.onclick = () => {
-      if (!target) return showMsg('请先在文件列表中点选目标剧集', false);
-      if (target.e == null) return showMsg('所选文件未标注集数，无法定位单集', false);
-      if (anchored) {
-        const s = target.s != null ? target.s : (curS != null ? curS : 1);
-        confirmSave(part, cand, 'episode', vid.split(':')[0] + ':' + s + ':' + target.e);
-      } else {  // 独立模式：share-only 任务，季集由 body 提供
-        confirmSave(part, cand, 'episode', null,
-                    { season: target.s != null ? target.s : 1, episode: target.e });
-      }
-    };
-    btns.appendChild(whole);
-    btns.appendChild(part);
-    btns.appendChild(el('span', 'hint', '（点选文件行可切换目标集）'));
+  wrap.appendChild(list);
+  wrap.appendChild(el('div', 'hint', '点选文件行可多选（再次点击取消）。'));
+
+  const acts = el('div', 'actions');
+  if (isSeries) {
+    const whole = el('button', 'save', '转存全部剧集');
+    whole.type = 'button';
+    whole.onclick = () => confirmSave(whole, c, 'whole');
+    acts.appendChild(whole);
+    picksBtn.onclick = () =>
+      confirmSave(picksBtn, c, 'picks', null, { fids: Array.from(pickedFids) });
+    acts.appendChild(picksBtn);
+    if (anchored && vtype === 'series') {
+      const cur = el('button', 'save',
+        `转存当前剧集（S${pad(curSeason || 0)}E${pad(curEpisode || 0)}）`);
+      cur.type = 'button';
+      cur.onclick = () => confirmSave(cur, c, 'episode');
+      acts.appendChild(cur);
+    }
+  } else {
+    const whole = el('button', 'save', '转存全部文件');
+    whole.type = 'button';
+    whole.onclick = () => confirmSave(whole, c, 'whole');
+    acts.appendChild(whole);
   }
-  box.appendChild(btns);
-  // 默认选中当前观看的集（锚定模式）；独立模式默认第一行
-  let def = null;
-  if (curS != null && curE != null) {
-    def = rows.find((r) => r._ep && r._ep.e === curE
-          && (r._ep.s == null || r._ep.s === curS)) || null;
-  }
-  (def || rows[0])?.onclick?.();  // 按钮就绪后再触发默认选中，顺带刷新按钮文字
-  return box;
+  wrap.appendChild(acts);
+  return wrap;
 }
 
-// ---- 初始化 ----
-document.getElementById('btn').addEventListener('click', dosearch);
-kwEl.addEventListener('keydown', (e) => { if (e.key === 'Enter') dosearch(); });
-renderDiskChips();
-renderAliveChips();
-document.getElementById('foot').textContent =
-  'TV 端可用遥控器方向键移动焦点、OK 键确认；仅夸克资源支持自动转存与内容解析。';
-if (anchored) {
-  dosearch();
-} else {
-  metaEl.textContent = '输入关键词开始搜索网盘资源';
-  kwEl.focus();
+/* ---- 转存 ---- */
+async function confirmSave(btn, c, mode = 'episode', targetId = null, extra = {}) {
+  btn.disabled = true;
+  const prev = btn.textContent;
+  btn.textContent = '创建任务…';
+  try {
+    const body = {
+      share_url: c.share_url, passcode: c.passcode,
+      title: c.title, source: c.source, mode,
+    };
+    if (anchored) { body.vtype = vtype; body.id = targetId || vid; }
+    if (extra.season != null) { body.season = extra.season; body.episode = extra.episode; }
+    if (extra.fids) body.fids = extra.fids;
+    const t = await api('/api/candidates/confirm', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    showMsg('任务已创建，正在跳转…', true);
+    setTimeout(() => { location.href = `/task/${t.task_id}`; }, 400);
+  } catch (e) {
+    showMsg('创建失败：' + (e.message || e), false);
+    btn.disabled = false;
+    btn.textContent = prev;
+  }
 }
+
+/* ---- 合规声明（foot 常驻） ---- */
+footEl.textContent = '本工具仅聚合第三方公开的网盘分享链接，不存储、不转码任何资源文件；'
+  + '请仅转存您拥有合法权利的内容，并遵守当地法律法规与网盘服务条款。'
+  + '搜索结果与存活状态由第三方服务提供，有效性不作保证。'
+  + '仅夸克资源支持自动转存，其他网盘请打开链接手动保存。'
+  + 'TV 端可用遥控器方向键移动焦点、OK 键确认。';
+
+/* ---- 初始化 ---- */
+buildChips();
+btnEl.onclick = dosearch;
+kwEl.addEventListener('keydown', (e) => { if (e.key === 'Enter') dosearch(); });
+if (anchored) dosearch();
+else kwEl.focus();

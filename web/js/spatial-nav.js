@@ -6,10 +6,13 @@
                    ArrowLeft: [-1, 0], ArrowRight: [1, 0] };
 
   function focusables() {
+    // 弹窗打开时焦点锁定在弹窗内（TV 遥控器不会导航到背景内容）
+    const modal = document.querySelector('.modal:not([hidden])');
     return Array.from(document.querySelectorAll(
       'a[href],button,input,textarea,select,[tabindex]'))
       .filter((e) => !e.disabled && e.tabIndex >= 0
-        && e.offsetParent !== null && !e.closest('[hidden]'));
+        && e.offsetParent !== null && !e.closest('[hidden]')
+        && (!modal || modal.contains(e)));
   }
 
   function center(el) {

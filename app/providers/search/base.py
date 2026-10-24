@@ -22,6 +22,7 @@ class SearchCandidate:
     score: float = 0.0   # 匹配评分（候选服务层填充，仅用于排序）
     alive_state: str = ""    # 链接存活检测状态（ok/bad/locked/unsupported/uncertain；非夸克留空）
     alive_summary: str = ""  # 检测说明文本（如"链接有效"/"分享不存在"）
+    detail: dict | None = None  # 分享内容详情（候选服务层对有效夸克候选解析填充）
 
 
 class SearchError(Exception):

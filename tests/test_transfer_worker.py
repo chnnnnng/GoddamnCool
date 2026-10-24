@@ -265,6 +265,67 @@ async def test_whole_mode_transfers_all_and_records_files(env):
     }
 
 
+async def test_picks_mode_transfers_selected_fids(env):
+    """picks 模式：按任务 fid 列表转存所选文件（可多选），只转这些。"""
+    fake, path = env
+    fake.entries = {
+        "0": [
+            {"fid": "s1", "file_name": "余罪.S01E01.2016.1080p.WEB-DL.mp4",
+             "dir": False, "size": 800, "share_fid_token": "t-s1"},
+            {"fid": "s2", "file_name": "余罪.S01E02.2016.1080p.WEB-DL.mp4",
+             "dir": False, "size": 810, "share_fid_token": "t-s2"},
+            {"fid": "s3", "file_name": "余罪.S01E03.2016.1080p.WEB-DL.mp4",
+             "dir": False, "size": 820, "share_fid_token": "t-s3"},
+        ],
+    }
+    fake._by_fid = {e["fid"]: e for lst in fake.entries.values() for e in lst}
+    t, _ = db.create_task(path, vtype="series", imdb_id="tt5925192", season=None,
+                          episode=None, title="余罪", candidate_title="余罪",
+                          share_url=SHARE_URL, mode="picks", picks=["s1", "s3"])
+    await run_tick(path)
+    t = db.get_task(path, t["id"])
+    assert t["status"] == "COMPLETED"
+    assert t["target_fid"] == ""                        # 多文件不锚定单文件
+    assert fake.save_calls[0]["fid_list"] == ["s1", "s3"]  # 只转所选
+    result = json.loads(t["result_json"])
+    assert result["mode"] == "picks"
+    assert {f["fid"] for f in result["files"]} == {"new-s1", "new-s3"}
+
+
+async def test_picks_mode_fids_not_in_share_fails(env):
+    """picks 模式：所选 fid 不在分享内容中 → 永久失败。"""
+    fake, path = env
+    t, _ = db.create_task(path, vtype="series", imdb_id="tt5925192", season=None,
+                          episode=None, title="余罪", candidate_title="余罪",
+                          share_url=SHARE_URL, mode="picks", picks=["nope"])
+    await run_tick(path)
+    t = db.get_task(path, t["id"])
+    assert t["status"] == "FAILED" and "所选文件" in t["error"]
+
+
+async def test_picks_mode_dedup_all_hit(env):
+    """picks 模式：网盘已有所选文件（同名同大小）→ 跳过转存直接完成。"""
+    fake, path = env
+    fake.entries = {
+        "0": [
+            {"fid": "s1", "file_name": "余罪.S01E01.2016.1080p.WEB-DL.mp4",
+             "dir": False, "size": 800, "share_fid_token": "t-s1"},
+        ],
+    }
+    fake._by_fid = {"s1": fake.entries["0"][0]}
+    fake.drive_files.append({"fid": "own-1", "dir": False, "size": 800,
+                             "file_name": "余罪.S01E01.2016.1080p.WEB-DL.mp4",
+                             "parent_path": "/"})
+    t, _ = db.create_task(path, vtype="series", imdb_id="tt5925192", season=None,
+                          episode=None, title="余罪", candidate_title="余罪",
+                          share_url=SHARE_URL, mode="picks", picks=["s1"])
+    await run_tick(path)
+    t = db.get_task(path, t["id"])
+    assert t["status"] == "COMPLETED" and t["target_fid"] == ""
+    assert fake.save_calls == []                        # 未提交夸克转存
+    assert json.loads(t["result_json"])["located"] == "dedup"
+
+
 async def test_poll_failure_status_fails_task(env):
     fake, path = env
     fake.poll_status = 3
