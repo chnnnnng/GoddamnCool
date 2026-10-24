@@ -250,10 +250,6 @@ function renderCard(c) {
 }
 
 function appendDetailSummary(card, d) {
-  const sum = el('div', 'dsum',
-    `视频 ${d.video_count} 个 · 共 ${d.total_size_h}` +
-    (d.other_count ? ` · 其他文件 ${d.other_count} 个` : ''));
-  card.appendChild(sum);
   /* 季集与影片规格 badges 同行显示 */
   const chips = el('div', 'seas');
   for (const s of (d.seasons || [])) {
@@ -262,6 +258,10 @@ function appendDetailSummary(card, d) {
   }
   for (const t of aggregateSpec(d)) chips.appendChild(el('span', 'seaschip', t));
   if (chips.children.length) card.appendChild(chips);
+  const sum = el('div', 'dsum',
+    `视频 ${d.video_count} 个 · 共 ${d.total_size_h}` +
+    (d.other_count ? ` · 其他文件 ${d.other_count} 个` : ''));
+  card.appendChild(sum);
 }
 
 /* ---- 查看内容弹窗 ---- */
@@ -316,9 +316,6 @@ function renderDetail(c, d) {
   const isSeries = isSeriesLike(d);
   const files = d.files || [];
   const wrap = el('div');
-  wrap.appendChild(el('div', 'dsum',
-    `视频 ${d.video_count} 个 · 共 ${d.total_size_h}` +
-    (d.other_count ? ` · 其他文件 ${d.other_count} 个` : '')));
   /* 季集与影片规格 badges 同行显示 */
   const chips = el('div', 'seas');
   for (const s of (d.seasons || [])) {
@@ -327,6 +324,9 @@ function renderDetail(c, d) {
   }
   for (const t of aggregateSpec(d)) chips.appendChild(el('span', 'seaschip', t));
   if (chips.children.length) wrap.appendChild(chips);
+  wrap.appendChild(el('div', 'dsum',
+  `视频 ${d.video_count} 个 · 共 ${d.total_size_h}` +
+  (d.other_count ? ` · 其他文件 ${d.other_count} 个` : '')));
 
   /* 按钮：
      - 独立【转存全部剧集】按钮：仅多视频时显示，无需手动全选；
