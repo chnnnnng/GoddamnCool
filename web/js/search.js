@@ -89,26 +89,27 @@ function aggregateSpec(d) {
 
 /* ---- 筛选 chips ---- */
 function buildChips() {
+  diskEl.textContent = '';  // 清空重建，防止点击切换时按钮重复累加
   for (const d of DISKS) {
     const c = el('button', 'chip', DISK_NAMES[d]);
     c.type = 'button';
     c.dataset.disk = d;
+    if (d === curDisk) c.classList.add('active');
     c.onclick = () => { curDisk = d; buildChips(); if (lastCands.length) renderResults(); };
     diskEl.appendChild(c);
   }
   buildAliveChips();
 }
 function buildAliveChips() {
-  Array.from(aliveEl.querySelectorAll('.chip')).forEach((x) => x.remove());
+  aliveEl.textContent = '';
   for (const [k, text] of ALIVE_FILTERS) {
     const c = el('button', 'chip', text);
     c.type = 'button';
     c.dataset.alive = k;
+    if (k === curAlive) c.classList.add('active');
     c.onclick = () => { curAlive = k; buildAliveChips(); if (lastCands.length) renderResults(); };
     aliveEl.appendChild(c);
   }
-  aliveEl.querySelectorAll('.chip').forEach((x) =>
-    x.classList.toggle('on', x.dataset.alive === curAlive));
 }
 
 /* ---- 搜索 ---- */
@@ -260,7 +261,8 @@ function appendDetailSummary(card, d) {
   if (chips.children.length) card.appendChild(chips);
   const sum = el('div', 'dsum',
     `视频 ${d.video_count} 个 · 共 ${d.total_size_h}` +
-    (d.other_count ? ` · 其他文件 ${d.other_count} 个` : ''));
+    (d.other_count ? ` · 其他文件 ${d.other_count} 个` : '') +
+    (d.existing_count ? ` · 网盘中已有 ${d.existing_count} 项` : ''));
   card.appendChild(sum);
 }
 
@@ -288,6 +290,7 @@ async function openDetail(btn, c) {
     }
     mbodyEl.textContent = '';
     mbodyEl.appendChild(renderDetail(c, c.detail));
+    renderResults();  // 弹窗解析完成后回填卡片摘要（含"网盘中已有 N 项"）
   } catch (e) {
     showMsg('查看内容失败：' + (e.message || e), false);
     hideModal();
@@ -328,7 +331,8 @@ function renderDetail(c, d) {
   if (chips.children.length) wrap.appendChild(chips);
   wrap.appendChild(el('div', 'dsum',
   `视频 ${d.video_count} 个 · 共 ${d.total_size_h}` +
-  (d.other_count ? ` · 其他文件 ${d.other_count} 个` : '')));
+  (d.other_count ? ` · 其他文件 ${d.other_count} 个` : '') +
+  (d.existing_count ? ` · 网盘中已有 ${d.existing_count} 项` : '')));
 
   /* 按钮：
      - 独立【转存全部剧集】按钮：仅多视频时显示，无需手动全选；
@@ -377,6 +381,11 @@ function renderDetail(c, d) {
     row.appendChild(el('div', 'fmeta',
       `${f.size_h}${sp ? ' · ' + sp : ''}${row._ep ? ' · ' + row._ep : ''}`));
     if (row._ep) row.appendChild(el('span', 'ep', row._ep));
+    if (f.exists) {  // 转存前网盘已有同名文件：绿勾提示（不拦截转存）
+      const tick = el('span', 'badge tick', '✓ 已在网盘');
+      tick.title = '网盘中已有同名文件，转存仍会执行（重名将由网盘自动处理）';
+      row.appendChild(tick);
+    }
     if (f.warn) {  // 文件名疑似不符合规范（无标题等），与任务页同一规则
       const w = el('span', 'badge warn', '⚠ 文件名不规范');
       w.title = f.warn;

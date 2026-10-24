@@ -13,7 +13,8 @@
   1. MovieMatcher 精准匹配（标题相似度 + 季集硬条件）→ 转存单个文件；
   2. 集数启发式回退（文件名无标题仅有集数且唯一）→ 转存单个文件；
   3. 均失败 → 转存整个分享顶层（用户确认的兜底策略），匹配交给 Stream 阶段。
-提交前防重：网盘已有同名（且大小一致）文件 → 跳过转存直接 COMPLETED。
+提交前防重检测：网盘已有同名（且大小一致）文件时**不跳过**转存（用户可能
+自行改名/删除，防跳过易造成缺集），仅在任务明细中对已有文件标记"已在网盘"。
 """
 import asyncio
 import json
@@ -160,21 +161,16 @@ class TransferWorker:
                                         "names": [t.path for t in tops][:20]}
             elif mode == "picks":  # 转存所选剧集（可多选）：按 fid 列表转存（阶段 6）
                 chosen, result = await self._pick_files_by_fids(provider, task, entries)
-                if not chosen:  # 全部防重命中：网盘已有所选文件
-                    return self._complete_picks_dedup(task)
             else:
                 picked = self._pick_file(entries, meta, task)
                 if picked is not None:
-                    existing = await self._find_duplicate(provider, picked)
-                    if existing:
-                        log.info("任务 %s 防重命中，网盘已有 %s，跳过转存",
-                                 task["id"], picked.name)
-                        return self._complete(task, fid=existing, located="dedup",
-                                              mode="targeted", name=picked.name,
-                                              size=picked.size)
                     chosen = [picked]
                     result = {"mode": "targeted", "name": picked.name,
                               "size": picked.size, "path": picked.path}
+                    if await self._find_duplicate(provider, picked):
+                        # 网盘已有同名：照常转存（用户可能已改名/删除），
+                        # 仅在任务明细中标记"已在网盘"
+                        result["existed"] = [picked.name]
                 else:
                     tops = [e for e in entries if "/" not in e.path]
                     if not tops:
@@ -232,31 +228,20 @@ class TransferWorker:
     async def _pick_files_by_fids(
             self, provider: QuarkDriveProvider, task: dict,
             entries: list[ShareFile]) -> tuple[list[ShareFile], dict]:
-        """picks 模式：按任务记录的 fid 列表选取分享文件；逐个防重，
-        网盘已有的跳过。返回 (待转存文件列表, result)。"""
+        """picks 模式：按任务记录的 fid 列表选取分享文件，全部转存；
+        网盘已有同名的文件记录到 result["existed"]（任务明细标记）。"""
         want = set(json.loads(task["picks"] or "[]"))
         videos = [e for e in entries if not e.is_dir and e.fid in want]
         if not videos:
             raise PermanentError("所选文件不在分享内容中（分享可能已更新）")
-        chosen = []
+        existed = []
         for f in videos:
             if await self._find_duplicate(provider, f):
-                log.info("任务 %s 防重命中 %s，跳过", task["id"], f.name)
-            else:
-                chosen.append(f)
-        result = {"mode": "picks",
-                  "names": [f.path for f in videos][:50],
-                  "skipped": [f.path for f in videos if f not in chosen]}
-        return chosen, result
-
-    def _complete_picks_dedup(self, task: dict) -> None:
-        """picks 模式全部防重命中：无需转存，直接 COMPLETED。"""
-        db.set_task_fields(self.db_path, task["id"], target_fid="",
-                           result_json=json.dumps(
-                               {"mode": "picks", "located": "dedup", "fid": ""},
-                               ensure_ascii=False))
-        db.update_task_status(self.db_path, task["id"], "COMPLETED",
-                              error="网盘已有所选文件，跳过重复转存")
+                existed.append(f.name)
+        result = {"mode": "picks", "names": [f.path for f in videos][:50]}
+        if existed:
+            result["existed"] = existed
+        return videos, result
 
     async def _load_meta(self, task: dict) -> VideoMeta:
         meta = await fetch_meta(task["imdb_id"], task["video_type"], self.db_path)

@@ -59,6 +59,8 @@
   min-height: 36px;
 }
 .chip:hover { border-color: var(--accent); }
+.chip.active { border-color: var(--accent); color: var(--accent);
+               background: rgba(52, 216, 115, .10); }
 .chip.on {
   background: var(--accent-dim);
   border-color: var(--accent);

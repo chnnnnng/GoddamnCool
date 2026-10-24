@@ -222,6 +222,31 @@ class QuarkDriveProvider(CloudDriveProvider):
         await walk("0", "", 0)
         return out
 
+    async def list_all_file_names(self, max_depth: int = 3) -> set[str]:
+        """递归列出网盘全部文件名（用于"分享文件网盘中已存在"提示比对）。
+
+        搜索接口不返回目录，故用 /file/sort 逐层分页；深度与页数有上限防失控。"""
+        names: set[str] = set()
+
+        async def walk(pdir_fid: str, depth: int) -> None:
+            page = 1
+            while page <= 30:  # 单层最多 30 页 × 100 条
+                data = await self._request("GET", "/file/sort", params={
+                    "pdir_fid": pdir_fid, "_page": str(page), "_size": "100"})
+                lst = data.get("list") or []
+                for e in lst:
+                    if e.get("dir"):
+                        if depth < max_depth:
+                            await walk(e.get("fid", ""), depth + 1)
+                    elif e.get("file_name"):
+                        names.add(e["file_name"])
+                if len(lst) < 100:
+                    return
+                page += 1
+
+        await walk("0", 0)
+        return names
+
     async def save_share_files(self, pwd_id: str, stoken: str, items: list[ShareFile],
                                to_pdir_fid: str = "0") -> dict:
         """提交转存到 to_pdir_fid 目录。返回 {"task_id", "top_fids"}：

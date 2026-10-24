@@ -179,7 +179,8 @@ async def test_targeted_transfer_success(env):
     assert fake.drive_dirs == ["GODDAMNCOOL"]
 
 
-async def test_dedup_skips_save(env):
+async def test_dedup_still_saves_and_marks(env):
+    """网盘已有同名文件：不跳过转存（用户可能已改名/删除），仅标记 existed。"""
     fake, path = env
     fake.drive_files.append({"fid": "own-1", "dir": False, "size": 800,
                              "file_name": "余罪.S01E01.2016.1080p.WEB-DL.mp4",
@@ -187,9 +188,10 @@ async def test_dedup_skips_save(env):
     t = make_task(path)
     await run_tick(path)
     t = db.get_task(path, t["id"])
-    assert t["status"] == "COMPLETED" and t["target_fid"] == "own-1"
-    assert json.loads(t["result_json"])["located"] == "dedup"
-    assert fake.save_calls == []                 # 未提交夸克转存
+    assert t["status"] == "COMPLETED"
+    assert len(fake.save_calls) == 1              # 照常提交转存
+    result = json.loads(t["result_json"])
+    assert result["existed"] == ["余罪.S01E01.2016.1080p.WEB-DL.mp4"]
 
 
 async def test_share_invalid_fails_fast(env):
@@ -308,8 +310,8 @@ async def test_picks_mode_fids_not_in_share_fails(env):
     assert t["status"] == "FAILED" and "所选文件" in t["error"]
 
 
-async def test_picks_mode_dedup_all_hit(env):
-    """picks 模式：网盘已有所选文件（同名同大小）→ 跳过转存直接完成。"""
+async def test_picks_mode_existed_marks(env):
+    """picks 模式：网盘已有所选文件（同名同大小）→ 照常转存并标记 existed。"""
     fake, path = env
     fake.entries = {
         "0": [
@@ -327,9 +329,10 @@ async def test_picks_mode_dedup_all_hit(env):
                           user_id=db.get_user_by_email(path, "u@test.io")["id"])
     await run_tick(path)
     t = db.get_task(path, t["id"])
-    assert t["status"] == "COMPLETED" and t["target_fid"] == ""
-    assert fake.save_calls == []                        # 未提交夸克转存
-    assert json.loads(t["result_json"])["located"] == "dedup"
+    assert t["status"] == "COMPLETED"
+    assert len(fake.save_calls) == 1              # 不再跳过转存
+    assert json.loads(t["result_json"])["existed"] == \
+        ["余罪.S01E01.2016.1080p.WEB-DL.mp4"]
 
 
 async def test_poll_failure_status_fails_task(env):

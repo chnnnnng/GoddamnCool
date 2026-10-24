@@ -137,6 +137,8 @@ form button[type="submit"] { margin-top: 14px; }
          background: var(--dim-bg); color: var(--dim-fg); vertical-align: 2px; }
 .badge.ok { background: var(--ok-bg); color: var(--ok-fg); }
 .badge.warn { background: var(--warn-bg); color: var(--warn-fg); }
+/* "网盘中已存在"绿勾徽章（任务页/搜索弹窗共用） */
+.badge.tick { background: rgba(52, 216, 115, .12); color: var(--accent); }
 .badge.err { background: var(--err-bg); color: var(--err-fg); }
 
 #toast.ok { border-color: var(--ok-fg); background: var(--ok-bg); color: var(--ok-fg); }

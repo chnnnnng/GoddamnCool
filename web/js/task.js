@@ -4,10 +4,6 @@ const taskId = location.pathname.split('/').pop();
 const STATUS_TEXT = {PENDING: '等待执行', SUBMITTING: '正在提交转存',
                      PROCESSING: '转存处理中', COMPLETED: '转存完成',
                      FAILED: '转存失败', EXPIRED: '任务超时或失效'};
-// 定位方式（result_json.located）→ 展示文案
-const LOCATED_TEXT = {save_as: '转存响应定位',
-                      dedup: '网盘已有同名文件（防重跳过）',
-                      search: '网盘搜索定位'};
 
 function row(dt, dd) {
   const d = document.createElement('dt'); d.textContent = dt;
@@ -49,6 +45,12 @@ function fileTable(files) {
     const tdName = document.createElement('td');
     tdName.className = 'wrap';
     tdName.textContent = f.name;
+    if (f.exists) {  // 转存前网盘已有同名文件：绿勾提示（不拦截转存）
+      tdName.appendChild(document.createTextNode(' '));
+      const tick = badge('✓ 已在网盘', 'tick');
+      tick.title = '转存前网盘中已有同名文件，本次转存仍会执行（重名将由网盘自动处理）';
+      tdName.appendChild(tick);
+    }
     if (f.warn) {  // 疑似不符合命名规范（与 matcher 规则一致）：黄色提示
       tdName.appendChild(document.createTextNode(' '));
       const b = badge('⚠ 文件名不规范', 'warn');
@@ -92,8 +94,6 @@ function render(t) {
       rows.push(row('转存方式', '所选文件（' + ((res.names || []).length || '?') + ' 项）'));
     else if (res.name)
       rows.push(row('转存方式', '单文件'));
-    if (res.located && LOCATED_TEXT[res.located])
-      rows.push(row('定位方式', LOCATED_TEXT[res.located]));
     if (t.target_fid) rows.push(row('网盘 fid', t.target_fid));
   }
   if (t.error) rows.push(row('状态信息', t.error));

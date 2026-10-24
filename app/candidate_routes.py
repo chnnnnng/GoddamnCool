@@ -30,6 +30,7 @@ from .auth import require_user
 from .matcher import VIDEO_EXTS, parse, parse_file_spec
 from .tmdb import fetch_meta
 from .providers.search import SHARE_URL_RE
+from .providers.quark import QuarkDriveProvider
 from .candidate_service import CandidateService
 from .stream_service import parse_video_id
 from .web_routes import page
@@ -233,6 +234,22 @@ async def candidates_inspect(request: Request):
     # 文件名不规范标志（与任务页同一规则，inspect 无季集目标，仅查无标题）
     for f in data.get("files", []):
         f["warn"] = _name_warn(f.get("name") or "", None, None)
+    # "网盘中已存在"标记：实时比对用户网盘文件名集合（不随 inspect 缓存过期）
+    data["existing_count"] = 0
+    try:
+        provider = QuarkDriveProvider(cookie=cookie, db_path=config.DB_PATH,
+                                      user_id=user["id"])
+        try:
+            existing = await provider.list_all_file_names()
+        finally:
+            await provider.close()
+        for f in data.get("files", []):
+            f["exists"] = (f.get("name") or "") in existing
+        data["existing_count"] = sum(1 for f in data.get("files", [])
+                                     if f.get("exists"))
+    except Exception:  # 网盘列名失败不阻塞分享解析，仅无提示
+        for f in data.get("files", []):
+            f["exists"] = False
     return data
 
 
@@ -317,13 +334,14 @@ def _name_warn(name: str, season: int | None, episode: int | None) -> str:
 
 
 def _task_files(task: dict) -> list[dict]:
-    """COMPLETED 任务的落盘文件明细：文件名/大小/规格/命名规范提示。"""
+    """COMPLETED 任务的落盘文件明细：文件名/大小/规格/命名规范提示/网盘已有标记。"""
     try:
         result = json.loads(task.get("result_json") or "{}")
     except ValueError:
         result = {}
+    existed = set(result.get("existed") or [])  # 转存前网盘已有同名（提示不拦截）
     raw: list[dict] = []
-    if result.get("name"):  # 单文件定位（targeted / 防重命中）
+    if result.get("name"):  # 单文件定位（targeted）
         raw = [{"name": result["name"], "size": result.get("size") or 0}]
     elif result.get("files"):  # 整包/多选落盘清单
         raw = list(result["files"])
@@ -335,6 +353,8 @@ def _task_files(task: dict) -> list[dict]:
         f["warn"] = _name_warn(f["name"], task.get("season"),
                                task.get("episode"))
         f["name_ok"] = not f["warn"]
+        f["exists"] = f["name"] in existed or \
+            os.path.basename(f["name"]) in existed
     return raw
 
 
