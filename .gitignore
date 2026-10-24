@@ -1,0 +1,27 @@
+# ===== 敏感信息与本地数据（严禁入库） =====
+# 环境配置（SECRET_KEY / ADMIN_TOKEN / QUARK_COOKIE 等）
+.env
+# 夸克网盘 Cookie（部署时手动放置）
+QUARK_COOKIE
+# TMDB API key（部署时手动放置）
+TMDB_API_KEY
+# SQLite 数据库（加密凭证与转存任务记录）
+data/
+
+# ===== Python =====
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+*.egg-info/
+build/
+dist/
+
+# ===== 运行时产物 =====
+nohup.out
+*.log
+
+# ===== IDE / 系统 =====
+.idea/
+.vscode/
+.DS_Store

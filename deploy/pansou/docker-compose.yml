@@ -1,0 +1,48 @@
+# PanSou 前后端集成版（前端 Web UI + 后端 API 同镜像）
+# 项目：https://github.com/fish2018/pansou-web
+#
+# 用途：为 Quark Stremio Add-on 提供自托管的外部资源搜索来源。
+# 启动：docker compose up -d    日志：docker compose logs -f
+#
+# 安全说明：当前已开放公网（0.0.0.0:8888），PanSou 默认无鉴权——任何人可用
+# 此实例搜索（KB 级 JSON 响应，流量成本低）。如需收紧：改回 "127.0.0.1:8888:80"
+# 仅本机访问，或启用 AUTH_* 认证环境变量（见官方 README）并同步给 addon 配置。
+services:
+  pansou:
+    image: ghcr.io/fish2018/pansou-web:latest
+    container_name: pansou
+    ports:
+      - "8888:80"                    # 宿主机 0.0.0.0:8888 → 容器 80（前端 + API 反代，公网可访问）
+    environment:
+      # 基础配置
+      - DOMAIN=localhost
+      - PANSOU_PORT=8888
+      - PANSOU_HOST=127.0.0.1
+      # 数据目录（缓存/日志统一在 /app/data）
+      - CACHE_PATH=/app/data/cache
+      - LOG_PATH=/app/data/logs
+      # 健康检查（容器内部监控 nginx 与后端进程）
+      - HEALTH_CHECK_INTERVAL=30
+      - HEALTH_CHECK_TIMEOUT=10
+      - HEALTH_CHECK_RETRIES=3
+      # 插件与 TG 频道：镜像已内置推荐集，如需自定义参考官方 docker-compose.yml
+      # - ENABLED_PLUGINS=...
+      # - CHANNELS=...
+      # 认证（可选，默认关闭）
+      # - AUTH_ENABLED=true
+      # - AUTH_USERS=admin:change-me
+      # - AUTH_TOKEN_EXPIRY=24
+      # - AUTH_JWT_SECRET=change-me
+    volumes:
+      - pansou-data:/app/data        # 缓存与日志持久化
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:80/ >/dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+volumes:
+  pansou-data:
+    driver: local
