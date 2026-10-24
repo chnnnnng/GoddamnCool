@@ -54,11 +54,6 @@ def test_admin_apis_require_admin(admin):
     assert client.get("/api/admin/config", headers=H(lite["token"])).status_code == 403
 
 
-def test_legacy_admin_token_can_manage(tmp_db):
-    auth = {"X-Admin-Token": INVITE}
-    assert client.get("/api/admin/users", headers=auth).status_code == 200
-
-
 # ---------- 用户管理 ----------
 
 def test_create_modify_delete_user(admin):

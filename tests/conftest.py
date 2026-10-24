@@ -7,7 +7,6 @@ from cryptography.fernet import Fernet
 os.environ.setdefault("SECRET_KEY", Fernet.generate_key().decode())
 os.environ.setdefault("ADMIN_TOKEN", "test-admin-token")
 os.environ.setdefault("DB_PATH", "/tmp/quark_stremio_test.db")
-os.environ.setdefault("PROXY_STREAM", "1")
 os.environ.setdefault("BASE_URL", "http://addon.example.test")
 
 from app import settings  # noqa: E402

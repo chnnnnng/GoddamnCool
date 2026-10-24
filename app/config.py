@@ -20,14 +20,11 @@ _load_dotenv()
 
 SECRET_KEY: str = os.environ.get("SECRET_KEY", "")
 ADMIN_TOKEN: str = os.environ.get("ADMIN_TOKEN", "")
-QUARK_COOKIE: str = os.environ.get("QUARK_COOKIE", "")
 DB_PATH: str = os.environ.get("DB_PATH", "data/quark_stremio.db")
 HOST: str = os.environ.get("HOST", "0.0.0.0")
 PORT: int = int(os.environ.get("PORT", "8000"))
 MATCH_THRESHOLD: float = float(os.environ.get("MATCH_THRESHOLD", "0.6"))
-# 代理模式：直链 CDN 节点按服务器位置调度，客户端直连绕网慢；开启后由本服务代理转发
-PROXY_STREAM: bool = os.environ.get("PROXY_STREAM", "1") == "1"
-# 对外可访问的基础地址（生成 /proxy 链接用），如 http://47.117.135.164
+# 对外可访问的基础地址（生成 Add-on 地址与引导链接用），如 http://47.117.135.164
 BASE_URL: str = os.environ.get("BASE_URL", "").rstrip("/")
 # 前端静态资源目录（前后端分离：HTML/CSS/JS 为独立文件，后端仅提供 JSON API 与静态服务）
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
@@ -87,7 +84,5 @@ def validate() -> list[str]:
     if not SECRET_KEY:
         errors.append("SECRET_KEY 未设置（生成方式见 .env.example）")
     if not ADMIN_TOKEN:
-        errors.append("ADMIN_TOKEN 未设置（用于保护授权页）")
-    if PROXY_STREAM and not BASE_URL:
-        errors.append("PROXY_STREAM 开启时必须设置 BASE_URL（对外可访问地址）")
+        errors.append("ADMIN_TOKEN 未设置（用作注册邀请码）")
     return errors

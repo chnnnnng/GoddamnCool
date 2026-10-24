@@ -45,17 +45,26 @@ class FakeProvider(CloudDriveProvider):
 
 def patch_service(monkeypatch, provider, meta_dict):
     """构造测试用 StreamService：db_path 用真实初始化的临时库
-    （:memory: 每次连接都是空库，新阶段的 db 查询会报 no such table）。"""
+    （:memory: 每次连接都是空库，新阶段的 db 查询会报 no such table）。
+
+    同时建测试用户并绑定网盘 Cookie（每用户 Add-on 端点 /s/{token}/... 用），
+    svc.user_token 保存该用户的 stream_token。"""
     import uuid
 
     from app import db as db_mod
+    from app.auth import hash_password, new_stream_token
     from app.config import SECRET_KEY
 
     path = f"/tmp/qs_streamsvc_{uuid.uuid4().hex}.db"
     db_mod.init(path, SECRET_KEY)
+    user = db_mod.create_user(path, "u@test.io", hash_password("password123"),
+                              "user", "pro", new_stream_token())
+    db_mod.save_user_cookie(path, user["id"], "cookie")
+    monkeypatch.setattr(stremio_routes.config, "DB_PATH", path)  # 用户端点读此库
     svc = ss.StreamService(db_path=path, threshold=0.6)
-    monkeypatch.setattr(svc, "load_cookie", lambda: "cookie")
-    monkeypatch.setattr(svc, "create_provider", lambda cookie: provider)
+    svc.user_token = user["stream_token"]
+    monkeypatch.setattr(svc, "create_provider",
+                        lambda cookie, user_id="": provider)
 
     async def fake_fetch_meta(*a, **k):
         return _meta(meta_dict)
@@ -97,10 +106,10 @@ async def test_stream_trusts_task_located_file(monkeypatch):
     _db.set_task_fields(svc.db_path, task["id"], target_fid="fid-bare",
                         result_json='{"name": "06.mkv"}')
 
-    streams, _ = await svc.get_streams("series", "tt5925192:2:6")
+    streams, _ = await svc.get_streams("series", "tt5925192:2:6", cookie="cookie")
     assert len(streams) == 1
     s = streams[0]
-    assert s["url"].startswith("http")            # 测试环境为代理流，线上为直链
+    assert s["url"].startswith("https://dl.example/")  # 直链模式
     assert s["description"].startswith("转存任务已定位该文件")
     assert s["behaviorHints"]["filename"] == "06.mkv"
     assert provider.requested_play.fid == "fid-bare"
@@ -118,7 +127,7 @@ async def test_stream_guidance_shows_task_progress(monkeypatch):
                                  candidate_title="余罪S1", share_url="https://pan.quark.cn/s/x1")
     db_mod.claim_task(svc.db_path, task["id"], "PENDING", "PROCESSING")
 
-    streams, _ = await svc.get_streams("series", "tt5925192:1:1")
+    streams, _ = await svc.get_streams("series", "tt5925192:1:1", cookie="cookie")
     assert len(streams) == 1
     s = streams[0]
     assert s["externalUrl"].endswith(f"/task/{task['id']}")
@@ -155,7 +164,7 @@ async def test_stream_whole_task_locates_bare_episode_file(monkeypatch):
         {"name": "06.mkv", "fid": "fid-e6", "size": 800},
     ])
 
-    streams, _ = await svc.get_streams("series", "tt5925192:2:6")
+    streams, _ = await svc.get_streams("series", "tt5925192:2:6", cookie="cookie")
     assert len(streams) == 1
     s = streams[0]
     assert s["description"].startswith("转存任务已定位该文件")
@@ -172,7 +181,7 @@ async def test_stream_whole_task_missing_episode_no_shortcircuit(monkeypatch):
                          "type": "series", "releaseInfo": "2016"})
     task = _create_whole_task(svc, [{"name": "05.mkv", "fid": "fid-e5", "size": 800}])
 
-    streams, _ = await svc.get_streams("series", "tt5925192:2:6")
+    streams, _ = await svc.get_streams("series", "tt5925192:2:6", cookie="cookie")
     assert len(streams) == 1
     assert streams[0]["externalUrl"].endswith(f"/task/{task['id']}")
 
@@ -188,15 +197,18 @@ async def test_stream_whole_task_season_guard(monkeypatch):
     task = _create_whole_task(svc, [{"name": "Show.S02E05.2024.1080p.mkv",
                                      "fid": "fid-x", "size": 800}])
 
-    streams, _ = await svc.get_streams("series", "tt5925192:1:5")
+    streams, _ = await svc.get_streams("series", "tt5925192:1:5", cookie="cookie")
     assert len(streams) == 1
     assert streams[0]["externalUrl"].endswith(f"/task/{task['id']}")
 
 
-# ---------- manifest ----------
+# ---------- manifest（每用户 Add-on） ----------
 
-def test_manifest_schema():
-    r = client.get("/manifest.json")
+def test_manifest_schema(monkeypatch):
+    svc = patch_service(monkeypatch, FakeProvider([]),
+                        {"imdb_id": "tt0848228", "name": "The Avengers",
+                         "type": "movie", "releaseInfo": "2012"})
+    r = client.get(f"/s/{svc.user_token}/manifest.json")
     assert r.status_code == 200
     m = r.json()
     for key in ("id", "version", "name", "description", "resources", "types", "idPrefixes"):
@@ -207,7 +219,11 @@ def test_manifest_schema():
     assert "catalogs" in m
 
 
-# ---------- stream ----------
+def test_manifest_invalid_token_404():
+    assert client.get("/s/deadbeef/manifest.json").status_code == 404
+
+
+# ---------- stream（每用户 Add-on） ----------
 
 def test_stream_movie_hit(monkeypatch):
     files = [CloudFile(fid="f1", name="The.Avengers.2012.1080p.BluRay.x264.mkv",
@@ -217,21 +233,40 @@ def test_stream_movie_hit(monkeypatch):
                          "type": "movie", "releaseInfo": "2012"})
     monkeypatch.setattr(stremio_routes, "service", svc)
 
-    r = client.get("/stream/movie/tt0848228.json")
+    r = client.get(f"/s/{svc.user_token}/stream/movie/tt0848228.json")
     assert r.status_code == 200
     data = r.json()
     assert set(data.keys()) == {"streams"}
     s = data["streams"][0]
-    assert s["url"].startswith("http://addon.example.test/proxy/f1?")
+    assert s["url"] == "https://dl.example/x.mp4"  # 直链 + proxyHeaders
+    assert s["behaviorHints"]["notWebReady"] is True
+    assert s["behaviorHints"]["proxyHeaders"]["request"] == {"Cookie": "c=1"}
     assert s["behaviorHints"]["filename"].endswith(".mkv")
 
 
-def test_stream_no_cookie(monkeypatch):
-    svc = ss.StreamService(db_path=":memory:")
-    monkeypatch.setattr(svc, "load_cookie", lambda: None)
+def test_stream_no_cookie_guides_panel(monkeypatch):
+    """未绑定 Cookie：严格不回退，返回 /panel 绑定引导流。"""
+    svc = patch_service(monkeypatch, FakeProvider([]),
+                        {"imdb_id": "tt0848228", "name": "The Avengers",
+                         "type": "movie", "releaseInfo": "2012"})
+    from app import db as db_mod
+    uid = db_mod.get_user_by_stream_token(svc.db_path, svc.user_token)["id"]
+    db_mod.delete_user_cookie(svc.db_path, uid)
     monkeypatch.setattr(stremio_routes, "service", svc)
-    r = client.get("/stream/movie/tt0848228.json")
-    assert r.json() == {"streams": []}
+    r = client.get(f"/s/{svc.user_token}/stream/movie/tt0848228.json")
+    streams = r.json()["streams"]
+    assert len(streams) == 1
+    assert streams[0]["externalUrl"].endswith("/panel")
+    assert "url" not in streams[0]
+
+
+def test_stream_invalid_token(monkeypatch):
+    svc = patch_service(monkeypatch, FakeProvider([]),
+                        {"imdb_id": "tt0848228", "name": "The Avengers",
+                         "type": "movie", "releaseInfo": "2012"})
+    monkeypatch.setattr(stremio_routes, "service", svc)
+    r = client.get("/s/no-such-token/stream/movie/tt0848228.json")
+    assert r.status_code == 200 and r.json()["streams"] == []
 
 
 def test_stream_low_confidence_guidance(monkeypatch):
@@ -240,7 +275,7 @@ def test_stream_low_confidence_guidance(monkeypatch):
                         {"imdb_id": "tt0848228", "name": "The Avengers",
                          "type": "movie", "releaseInfo": "2012"})
     monkeypatch.setattr(stremio_routes, "service", svc)
-    r = client.get("/stream/movie/tt0848228.json")
+    r = client.get(f"/s/{svc.user_token}/stream/movie/tt0848228.json")
     streams = r.json()["streams"]
     # 未命中时返回 externalUrl 引导流（候选资源页），不伪造播放流
     assert len(streams) == 1
@@ -257,7 +292,7 @@ def test_stream_series_episode(monkeypatch):
                          "type": "series", "releaseInfo": "2016",
                          "videos": [{"season": 1, "episode": 12, "name": "一切归零"}]})
     monkeypatch.setattr(stremio_routes, "service", svc)
-    r = client.get("/stream/series/tt5636724:1:12.json")
+    r = client.get(f"/s/{svc.user_token}/stream/series/tt5636724:1:12.json")
     assert r.status_code == 200
     assert len(r.json()["streams"]) == 1
 
@@ -269,7 +304,7 @@ def test_stream_series_wrong_episode_guidance(monkeypatch):
                          "type": "series", "releaseInfo": "2016",
                          "videos": [{"season": 1, "episode": 12, "name": "一切归零"}]})
     monkeypatch.setattr(stremio_routes, "service", svc)
-    r = client.get("/stream/series/tt5636724:1:12.json")
+    r = client.get(f"/s/{svc.user_token}/stream/series/tt5636724:1:12.json")
     streams = r.json()["streams"]
     assert len(streams) == 1
     assert streams[0]["externalUrl"].endswith("/search?vtype=series&id=tt5636724:1:12")

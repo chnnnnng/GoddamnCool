@@ -50,6 +50,11 @@ function el(tag, cls, text) {
 function showMsg(text, ok) {
   const m = document.getElementById('msg');
   if (!m) return;
+  if (!text) {  // 空文本 = 清除消息（还原为隐藏态，避免残留空的消息条）
+    m.className = 'msg';
+    m.textContent = '';
+    return;
+  }
   m.className = 'msg ' + (ok ? 'ok' : 'err');
   m.textContent = text;
 }

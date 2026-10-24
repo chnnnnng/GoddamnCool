@@ -1,5 +1,12 @@
 /* 登录 / 控制面板 / 管理后台三页共用样式（配合 common.css 主题变量）。 */
 
+/* 内容宽度与搜索页统一（common.css 默认卡片限宽 720px 是任务页场景）：
+   控制面板/管理页卡片铺满 1100px 主栏，登录页单独收窄。 */
+main { max-width: 1100px; }
+main > .card { max-width: none; margin: 18px 0 24px; }
+main.narrow { max-width: 480px; }
+main.narrow > .card { margin: 24px 0; }
+
 /* Tab 切换（登录页） */
 .tabs { display: flex; gap: 8px; margin-bottom: 6px; }
 .tabs .tab { flex: 1; background: var(--card2); color: var(--dim);

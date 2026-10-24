@@ -27,13 +27,6 @@ def init(db_path: str, secret_key: str) -> None:
     _fernet = Fernet(secret_key.encode())
     with _lock, _conn(db_path) as c:
         c.execute(
-            """CREATE TABLE IF NOT EXISTS credentials (
-                   id INTEGER PRIMARY KEY CHECK (id = 1),
-                   cookie_enc TEXT NOT NULL,
-                   updated_at TEXT DEFAULT (datetime('now', 'localtime'))
-               )"""
-        )
-        c.execute(
             """CREATE TABLE IF NOT EXISTS tmdb_cache (
                    imdb_id TEXT NOT NULL,
                    vtype TEXT NOT NULL,
@@ -146,24 +139,6 @@ def _encrypt(cookie: str) -> str:
 
 def _decrypt(blob: str) -> str:
     return _fernet.decrypt(blob.encode()).decode()
-
-
-def save_cookie(db_path: str, cookie: str) -> None:
-    with _lock, _conn(db_path) as c:
-        c.execute(
-            """INSERT INTO credentials (id, cookie_enc, updated_at)
-               VALUES (1, ?, datetime('now', 'localtime'))
-               ON CONFLICT(id) DO UPDATE SET
-                   cookie_enc = excluded.cookie_enc,
-                   updated_at = excluded.updated_at""",
-            (_encrypt(cookie),),
-        )
-
-
-def load_cookie(db_path: str) -> str | None:
-    with _lock, _conn(db_path) as c:
-        row = c.execute("SELECT cookie_enc FROM credentials WHERE id = 1").fetchone()
-    return _decrypt(row["cookie_enc"]) if row else None
 
 
 # ---- 转存任务（阶段 3：创建与查询；阶段 4：状态机推进） ----

@@ -33,9 +33,11 @@ _RESOLUTION_RANK = {"4k": 5, "2k": 4, "super": 3, "high": 2, "low": 1}
 class QuarkDriveProvider(CloudDriveProvider):
     name = "夸克网盘"
 
-    def __init__(self, cookie: str, db_path: str):
+    def __init__(self, cookie: str, db_path: str, user_id: str = ""):
         self._cookie = cookie.strip()
         self._db_path = db_path
+        # 绑定用户：响应刷新 __puus 时回写该用户的加密凭证（多用户隔离）
+        self._user_id = user_id
         self._client = httpx.AsyncClient(
             timeout=httpx.Timeout(30, connect=10),
             follow_redirects=False,
@@ -51,15 +53,19 @@ class QuarkDriveProvider(CloudDriveProvider):
     # ---- 内部工具 ----
 
     def _absorb_puus(self, resp: httpx.Response) -> None:
-        """响应携带新 __puus 时回写内存与数据库（限流对抗，关键工程细节）。"""
+        """响应携带新 __puus 时回写内存与数据库（限流对抗，关键工程细节）。
+
+        仅在构造时传入 user_id（绑定用户）才落库，避免误写他人凭证。"""
         puus = resp.cookies.get("__puus")
         if not puus:
             return
         head = self._cookie.split("__puus=")[0].rstrip("; ")
         self._cookie = (head + ";" if head else "") + f"__puus={puus}"
         self._client.headers["Cookie"] = self._cookie
+        if not self._user_id:
+            return
         try:
-            db.save_cookie(self._db_path, self._cookie)
+            db.save_user_cookie(self._db_path, self._user_id, self._cookie)
         except Exception:  # 回写失败不影响当次播放
             log.exception("回写 __puus 失败")
 

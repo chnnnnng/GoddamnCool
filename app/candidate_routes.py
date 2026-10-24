@@ -1,8 +1,7 @@
 """搜索资源页与转存任务 API（前后端分离）。
 
 页面为 web/ 下静态文件（search.html / task.html），本模块只提供 JSON API
-与页面路由；所有 /api/* 接口要求登录（X-Session-Token 会话或旧版
-X-Admin-Token 全局管理令牌）。
+与页面路由；所有 /api/* 接口要求登录（X-Session-Token 会话）。
 
 两种搜索模式（/search 页面按 URL 参数自动区分）：
 - Stremio 锚定模式：/search?vtype=movie&id=tt...（带影片，自动搜 TMDB 双语名，
@@ -10,7 +9,7 @@ X-Admin-Token 全局管理令牌）。
 - 独立搜索模式：/search（仅手动关键词 + 网盘类型筛选，转存为 share-only 任务）。
 
 多用户隔离（阶段 8）：
-- 搜索/inspect/转存一律使用登录用户自己绑定的网盘 Cookie 与 TMDB key；
+- 搜索/inspect/转存一律使用登录用户自己绑定的网盘 Cookie，TMDB key 管理员统一配置；
 - Lite 用户每日搜索有配额（LITE_DAILY_SEARCH_LIMIT），Pro/管理员不限；
 - 转存任务按用户隔离，任务详情仅本人与管理员可见。
 
@@ -62,15 +61,8 @@ def _parse_disks(raw: str) -> list[str] | None:
 
 
 def _unlimited(user: dict) -> bool:
-    """该用户是否不受每日搜索配额限制。"""
-    return (user["legacy"] or user["role"] == "admin" or user["tier"] == "pro")
-
-
-def _user_cookie(user: dict) -> str | None:
-    """取用户自己的网盘 Cookie；legacy 虚拟用户返回 None（由调用方回退全局）。"""
-    if user["legacy"]:
-        return None
-    return db.load_user_cookie(config.DB_PATH, user["id"])
+    """该用户是否不受每日搜索/转存配额限制（Pro 与管理员不限）。"""
+    return user["role"] == "admin" or user["tier"] == "pro"
 
 
 @router.get("/search")
@@ -104,8 +96,9 @@ async def candidates_search(request: Request, vtype: str = "movie", id: str = ""
                 {"detail": f"今日搜索次数已用完（{limit}/{limit}），升级 Pro 解除限制"},
                 status_code=429)
         db.incr_search_count(config.DB_PATH, user["id"])
+    user_cookie = db.load_user_cookie(config.DB_PATH, user["id"]) or ""
     meta, cands, errors, keyword = await candidate_service.search(
-        vtype, id, keyword=kw, disks=disk_list)
+        vtype, id, keyword=kw, disks=disk_list, cookie=user_cookie)
     if id and meta is None:  # 锚定模式影片元数据失败（独立搜索 meta 恒为 null）
         return JSONResponse({"detail": errors or "影片元数据获取失败"}, status_code=404)
     return {
@@ -221,9 +214,9 @@ async def candidates_inspect(request: Request):
     if not SHARE_URL_RE.match(url):
         return JSONResponse({"detail": "分享链接无效（仅支持 pan.quark.cn 分享链接）"},
                             status_code=400)
-    # 解析分享目录需要登录网盘：一律使用本人 Cookie（legacy 回退全局凭证）
-    cookie = _user_cookie(user)
-    if not user["legacy"] and not cookie:
+    # 解析分享目录需要登录网盘：一律使用本人 Cookie
+    cookie = db.load_user_cookie(config.DB_PATH, user["id"])
+    if not cookie:
         return JSONResponse({"detail": "请先在控制面板绑定网盘 Cookie"},
                             status_code=400)
     try:
@@ -274,10 +267,9 @@ async def task_api(request: Request, task_id: str):
     task = db.get_task(config.DB_PATH, task_id)
     if task is None:
         return JSONResponse({"detail": "任务不存在"}, status_code=404)
-    # 归属校验（防遍历）：仅本人与管理员可见；legacy 全局令牌可见全部
-    if (not user["legacy"] and user["role"] != "admin"
-            and task["user_id"] != user["id"]):
+    # 归属校验（防遍历）：仅本人与管理员可见
+    if user["role"] != "admin" and task["user_id"] != user["id"]:
         return JSONResponse({"detail": "任务不存在"}, status_code=404)
     task["status_text"] = _STATUS_TEXT.get(task["status"], task["status"])
-    task["save_dir"] = config.TRANSFER_DIR  # 落盘目录名（任务页展示用）
+    task["save_dir"] = settings.get("TRANSFER_DIR")  # 落盘目录名（任务页展示用）
     return task

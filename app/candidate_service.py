@@ -105,7 +105,7 @@ class CandidateService:
         return providers
 
     async def search(self, vtype: str, video_id: str, keyword: str = "",
-                     disks: list[str] | None = None) \
+                     disks: list[str] | None = None, cookie: str = "") \
             -> tuple[VideoMeta | None, list[SearchCandidate], str, str]:
         """返回 (影片元数据, 候选列表, 错误说明, 实际使用的关键词)。
 
@@ -115,6 +115,8 @@ class CandidateService:
         关键词搜索一次。
         TMDB key 由管理员统一配置（settings），普通用户不可见。
         disks: 网盘类型列表；None → 默认仅夸克，空列表 → 全部网盘（透传 Provider）。
+        cookie: 调用者自己绑定的网盘 Cookie（多用户隔离），用于"有效"候选的
+        分享内容解析；缺省时内容解析跳过（详情不展示、不排除无视频条目）。
         来源级失败不中断整体搜索。候选合并后统一对夸克链接做存活检测（PanSou
         /api/check/links），并对"有效"候选解析分享内容：详情填充到 detail
         （搜索结果页直显），内容中无视频文件的标记为 bad 排除出"有效"。
@@ -188,7 +190,7 @@ class CandidateService:
                     c.alive_state = r.get("state") or "uncertain"
                     c.alive_summary = r.get("summary") or ""
             # 内容解析（仅"有效"夸克候选）：详情直显 + 无视频文件排除（需求 4/5）
-            await self._enrich_ok(quark)
+            await self._enrich_ok(quark, cookie=cookie)
             self._resort(merged)
         log.info("候选搜索 %s kw=%r: %d 关键词 %d 来源 %d 有效候选, 错误: %s",
                  video_id or "(独立搜索)", kw, len(keywords), len(providers),
@@ -221,7 +223,8 @@ class CandidateService:
                                    1 if not c.alive_state else 0,
                                    -c.score, -_published_ts(c)))
 
-    async def _enrich_ok(self, quark: list[SearchCandidate]) -> None:
+    async def _enrich_ok(self, quark: list[SearchCandidate],
+                         cookie: str = "") -> None:
         """对"有效"的夸克候选并发解析分享内容（inspect 结果自带 1 天缓存）：
         - detail 填充到候选（搜索结果页直显季集/规格摘要）；
         - 内容中无视频文件 → 标记 bad（"内容无视频文件"），排挤出"有效"；
@@ -234,7 +237,8 @@ class CandidateService:
         async def one(c: SearchCandidate) -> None:
             async with sem:
                 try:
-                    c.detail = await self.inspect_share(c.share_url, c.passcode)
+                    c.detail = await self.inspect_share(c.share_url, c.passcode,
+                                                        cookie=cookie)
                 except Exception as e:  # 解析失败保守保留原状态
                     log.info("候选内容解析失败 %s: %s", c.share_url, e)
 
@@ -279,10 +283,10 @@ class CandidateService:
         return out
 
     async def inspect_share(self, share_url: str, passcode: str = "",
-                            cookie: str | None = None) -> dict:
+                            cookie: str = "") -> dict:
         """解析分享链接的内容清单与文件规格（阶段 5，实时查询夸克）。
 
-        cookie: 调用者自己的网盘 Cookie（多用户隔离）；缺省回退服务端全局凭证。
+        cookie: 调用者自己绑定的网盘 Cookie（多用户隔离，必传）。
         返回 {"video_count", "other_count", "total_size", "total_size_h",
         "is_series", "seasons", "files"}；files 每项含 name/path/fid/size/
         size_h/season/episode/spec（清晰度/编码/音轨/字幕/语言，来自文件名标注）。
@@ -291,9 +295,8 @@ class CandidateService:
         cache_key = f"inspect:{share_url}|{passcode}"
         if (cached := db.get_cache(self.db_path, cache_key)) is not None:
             return cached
-        cookie = cookie or db.load_cookie(self.db_path) or (config.QUARK_COOKIE or None)
         if not cookie:
-            raise ProviderError("未绑定网盘账号，请访问 /setup 完成授权")
+            raise ProviderError("未绑定网盘 Cookie，请在控制面板绑定")
         provider = QuarkDriveProvider(cookie=cookie, db_path=self.db_path)
         try:
             pwd_id = parse_pwd_id(share_url)

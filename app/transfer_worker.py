@@ -96,7 +96,7 @@ class TransferWorker:
             except PermanentError as e:
                 self._fail_permanent(task, str(e))
             except ProviderAuthError as e:
-                self._fail_permanent(task, f"网盘登录态失效，请重新在 /setup 授权: {e}")
+                self._fail_permanent(task, f"网盘登录态失效，请在控制面板重新绑定 Cookie: {e}")
             except Exception:
                 # 未预期异常按瞬时错误处理（重试机制兜底）
                 log.exception("任务 %s 执行异常", task["id"])
@@ -128,23 +128,18 @@ class TransferWorker:
         elif task["status"] == "PROCESSING" and task["quark_task_id"]:
             await self._poll_and_finish(task)
 
-    def _cookie_for_task(self, task: dict) -> str | None:
-        """按任务归属取网盘 Cookie：用户任务用本人 Cookie（未绑定属永久错误），
-        旧版全局任务（user_id=''）回退服务端全局凭证。"""
-        uid = task.get("user_id") or ""
-        if uid:
-            cookie = db.load_user_cookie(self.db_path, uid)
-            if not cookie:
-                raise PermanentError("用户未绑定网盘 Cookie，请在控制面板绑定后重试")
-            return cookie
-        return db.load_cookie(self.db_path) or (config.QUARK_COOKIE or None)
+    def _cookie_for_task(self, task: dict) -> str:
+        """按任务归属取网盘 Cookie（任务必有归属用户；未绑定属永久错误）。"""
+        cookie = db.load_user_cookie(self.db_path, task.get("user_id") or "")
+        if not cookie:
+            raise PermanentError("用户未绑定网盘 Cookie，请在控制面板绑定后重试")
+        return cookie
 
     async def _submit(self, task: dict) -> None:
         """SUBMITTING：解析分享 → 选文件 → 防重 → 提交转存 → PROCESSING。"""
         cookie = self._cookie_for_task(task)
-        if not cookie:
-            raise PermanentError("未绑定网盘账号，请访问 /setup 完成授权")
-        provider = QuarkDriveProvider(cookie=cookie, db_path=self.db_path)
+        provider = QuarkDriveProvider(cookie=cookie, db_path=self.db_path,
+                                      user_id=task.get("user_id") or "")
         try:
             pwd_id = parse_pwd_id(task["share_url"])
             try:
@@ -210,9 +205,8 @@ class TransferWorker:
     async def _poll_and_finish(self, task: dict) -> None:
         """PROCESSING：轮询夸克任务直至成功/失败/超时。"""
         cookie = self._cookie_for_task(task)
-        if not cookie:
-            raise PermanentError("未绑定网盘账号，请访问 /setup 完成授权")
-        provider = QuarkDriveProvider(cookie=cookie, db_path=self.db_path)
+        provider = QuarkDriveProvider(cookie=cookie, db_path=self.db_path,
+                                      user_id=task.get("user_id") or "")
         deadline = time.monotonic() + config.TRANSFER_TASK_TIMEOUT
         try:
             ridx = 0

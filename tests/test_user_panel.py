@@ -1,4 +1,4 @@
-"""阶段 8：用户面板 API 测试（Cookie/TMDB key 绑定、令牌轮换、我的任务）。"""
+"""阶段 8：用户面板 API 测试（Cookie 绑定/检测、保存目录、令牌轮换、我的任务）。"""
 import os
 
 os.environ.setdefault("SECRET_KEY", "test-secret-key-0123456789abcdef0123456789")
@@ -31,8 +31,9 @@ def tmp_db(tmp_path, monkeypatch):
 class FakeProvider:
     """verify 按记录：cookie 含 "bad" 视为登录态失效。"""
 
-    def __init__(self, cookie=None, db_path=None):
+    def __init__(self, cookie=None, db_path=None, user_id=None):
         self.cookie = cookie
+        self.user_id = user_id
 
     async def verify(self):
         if "bad" in self.cookie:
@@ -58,17 +59,6 @@ def H(token):
 def user(tmp_db, monkeypatch):
     monkeypatch.setattr(ur, "QuarkDriveProvider", FakeProvider)
     return register()
-
-
-# ---------- 旧版令牌不支持用户面板 ----------
-
-def test_legacy_token_cannot_use_panel(tmp_db):
-    auth = {"X-Admin-Token": INVITE}
-    assert client.post("/api/me/cookie", headers=auth,
-                       json={"cookie": "kps=1; __puus=x"}).status_code == 403
-    assert client.post("/api/me/save_dir", headers=auth,
-                       json={"save_dir": "Movies"}).status_code == 403
-    assert client.get("/api/me/tasks", headers=auth).status_code == 403
 
 
 # ---------- 网盘 Cookie 绑定 ----------
@@ -98,6 +88,18 @@ def test_bind_cookie_verify_failed(user, tmp_db):
                     json={"cookie": "bad-cookie; __puus=x"})
     assert r.status_code == 400 and "Cookie 验证失败" in r.json()["detail"]
     assert db.load_user_cookie(tmp_db, user["user"]["id"]) is None
+
+
+def test_check_cookie_state(user):
+    Hh = H(user["token"])
+    # 未绑定时检测 → 400
+    assert client.post("/api/me/cookie/check", headers=Hh).status_code == 400
+    # 绑定后检测 → 有效
+    assert client.post("/api/me/cookie", headers=Hh,
+                       json={"cookie": "kps=1; __puus=x"}).status_code == 200
+    r = client.post("/api/me/cookie/check", headers=Hh)
+    assert r.status_code == 200 and r.json()["ok"] is True
+    assert "有效" in r.json()["message"]
 
 
 # ---------- 保存目录 ----------

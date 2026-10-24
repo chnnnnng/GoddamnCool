@@ -35,11 +35,18 @@
     state.appendChild(meData.cookie_bound
       ? badge('已绑定', 'ok')
       : badge('未绑定', 'warn'));
+    // 检测/解绑按钮：仅已绑定时可用（检测按钮实时验证 Cookie 有效性）
     document.getElementById('ck-unbind').hidden = !meData.cookie_bound;
+    document.getElementById('ck-check').hidden = !meData.cookie_bound;
   }
 
   function renderSaveDir() {
     document.getElementById('sd-input').value = meData.save_dir || '';
+    // 默认目录提示：写出管理员配置的服务器默认目录（空 = 网盘根目录）
+    var d = meData.default_save_dir || '';
+    document.getElementById('sd-default-tip').textContent = d
+      ? '留空表示使用服务器默认目录「' + d + '」（管理员配置）。'
+      : '留空表示直接保存到网盘根目录（服务器未配置默认目录）。';
   }
 
   function renderAddon() {
@@ -55,7 +62,7 @@
       renderAddon();
       return data;
     }).catch(function (e) {
-      // 非 legacy 用户才可能到面板；401 已由 api() 跳登录
+      // 401 已由 api() 跳登录；其余错误行内提示
       showMsg(e.message, false);
       throw e;
     });
@@ -78,10 +85,26 @@
   });
 
   document.getElementById('ck-unbind').addEventListener('click', function () {
-    if (!confirm('确定解除网盘 Cookie 绑定？解除后搜索与转存将不可用。')) return;
+    if (!confirm('确定解除夸克网盘 Cookie 绑定？解除后搜索与转存将不可用。')) return;
     api('/api/me/cookie', { method: 'DELETE' })
       .then(function (r) { showMsg(r.message, true); return loadMe(); })
       .catch(function (e) { showMsg(e.message, false); });
+  });
+
+  // 绑定状态检测：实时验证已绑定 Cookie 是否有效（结果同步刷新徽章）
+  document.getElementById('ck-check').addEventListener('click', function () {
+    var btn = document.getElementById('ck-check');
+    btn.disabled = true;
+    api('/api/me/cookie/check', { method: 'POST' })
+      .then(function (r) {
+        showMsg(r.message, r.ok);
+        var state = document.getElementById('ck-state');
+        state.textContent = '';
+        state.appendChild(badge(r.ok ? '已绑定' : '已失效',
+                                r.ok ? 'ok' : 'err'));
+      })
+      .catch(function (e) { showMsg(e.message, false); })
+      .finally(function () { btn.disabled = false; });
   });
 
   // ---- 保存目录 ----

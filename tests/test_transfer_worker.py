@@ -123,7 +123,8 @@ def make_meta():
 def env(tmp_path, monkeypatch):
     path = str(tmp_path / "t.db")
     db.init(path, SECRET)
-    db.save_cookie(path, "c=1")
+    uid = db.create_user(path, "u@test.io", "x", "user", "pro", "tok")["id"]
+    db.save_user_cookie(path, uid, "c=1")
     monkeypatch.setattr(config, "TRANSFER_DIR", "GODDAMNCOOL")
     monkeypatch.setattr(config, "TRANSFER_POLL_INTERVAL", 0.01)
     monkeypatch.setattr(config, "TRANSFER_TASK_TIMEOUT", 5)
@@ -132,8 +133,8 @@ def env(tmp_path, monkeypatch):
     fake = FakeQuark()
     real_cls = tw.QuarkDriveProvider
 
-    def factory(cookie, db_path):
-        p = real_cls(cookie=cookie, db_path=db_path)
+    def factory(cookie, db_path, user_id=""):
+        p = real_cls(cookie=cookie, db_path=db_path, user_id=user_id)
         p._client = AsyncClient(transport=MockTransport(fake.handler), timeout=10,
                                 headers={"Cookie": cookie}, params={"pr": "ucpro", "fr": "pc"})
         return p
@@ -148,10 +149,11 @@ def env(tmp_path, monkeypatch):
 
 
 def make_task(path, season=1, episode=1):
+    uid = db.get_user_by_email(path, "u@test.io")["id"]  # 任务须归属绑定 Cookie 的用户
     task, _ = db.create_task(
         path, vtype="series", imdb_id="tt5925192", season=season, episode=episode,
         title="余罪", candidate_title="余罪 1-2季 4K", share_url=SHARE_URL,
-        passcode="", source="test")
+        passcode="", source="test", user_id=uid)
     return task
 
 
@@ -251,7 +253,8 @@ async def test_whole_mode_transfers_all_and_records_files(env):
     fake._by_fid = {e["fid"]: e for lst in fake.entries.values() for e in lst}
     t, _ = db.create_task(path, vtype="series", imdb_id="tt5925192", season=None,
                           episode=None, title="余罪", candidate_title="余罪 全集",
-                          share_url=SHARE_URL, mode="whole")
+                          share_url=SHARE_URL, mode="whole",
+                          user_id=db.get_user_by_email(path, "u@test.io")["id"])
     await run_tick(path)
     t = db.get_task(path, t["id"])
     assert t["status"] == "COMPLETED"
@@ -281,7 +284,8 @@ async def test_picks_mode_transfers_selected_fids(env):
     fake._by_fid = {e["fid"]: e for lst in fake.entries.values() for e in lst}
     t, _ = db.create_task(path, vtype="series", imdb_id="tt5925192", season=None,
                           episode=None, title="余罪", candidate_title="余罪",
-                          share_url=SHARE_URL, mode="picks", picks=["s1", "s3"])
+                          share_url=SHARE_URL, mode="picks", picks=["s1", "s3"],
+                          user_id=db.get_user_by_email(path, "u@test.io")["id"])
     await run_tick(path)
     t = db.get_task(path, t["id"])
     assert t["status"] == "COMPLETED"
@@ -297,7 +301,8 @@ async def test_picks_mode_fids_not_in_share_fails(env):
     fake, path = env
     t, _ = db.create_task(path, vtype="series", imdb_id="tt5925192", season=None,
                           episode=None, title="余罪", candidate_title="余罪",
-                          share_url=SHARE_URL, mode="picks", picks=["nope"])
+                          share_url=SHARE_URL, mode="picks", picks=["nope"],
+                          user_id=db.get_user_by_email(path, "u@test.io")["id"])
     await run_tick(path)
     t = db.get_task(path, t["id"])
     assert t["status"] == "FAILED" and "所选文件" in t["error"]
@@ -318,7 +323,8 @@ async def test_picks_mode_dedup_all_hit(env):
                              "parent_path": "/"})
     t, _ = db.create_task(path, vtype="series", imdb_id="tt5925192", season=None,
                           episode=None, title="余罪", candidate_title="余罪",
-                          share_url=SHARE_URL, mode="picks", picks=["s1"])
+                          share_url=SHARE_URL, mode="picks", picks=["s1"],
+                          user_id=db.get_user_by_email(path, "u@test.io")["id"])
     await run_tick(path)
     t = db.get_task(path, t["id"])
     assert t["status"] == "COMPLETED" and t["target_fid"] == ""
@@ -407,7 +413,7 @@ async def test_auth_error_fails_permanently(env, monkeypatch):
     monkeypatch.setattr(RealProvider, "get_share_stoken", broken)  # 真实类方法（工厂包装的是它）
     await run_tick(path)
     t = db.get_task(path, t["id"])
-    assert t["status"] == "FAILED" and "授权" in t["error"]
+    assert t["status"] == "FAILED" and "重新绑定" in t["error"]
 
 
 # ---- db 层 ----

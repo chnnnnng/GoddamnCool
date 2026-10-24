@@ -23,7 +23,7 @@ client = TestClient(app)
 client.__enter__()
 
 SECRET = Fernet.generate_key().decode()
-AUTH = {"X-Admin-Token": "test-admin-token"}
+AUTH = {}  # 由 tmp_db fixture 动态生成（注册管理员 + 会话）
 GOOD_URL = "https://pan.quark.cn/s/f32d0e563a19"
 
 
@@ -32,6 +32,17 @@ def tmp_db(tmp_path, monkeypatch):
     path = str(tmp_path / "t.db")
     db.init(path, SECRET)
     monkeypatch.setattr(config, "DB_PATH", path)
+    # 删除 legacy 全局令牌后，AUTH 统一为注册用户会话（首个用户为管理员）
+    global AUTH
+    from app.auth import hash_password, new_session_token, new_stream_token
+    if not db.get_user_by_email(path, "admin@test.io"):
+        db.create_user(path, "admin@test.io", hash_password("password123"),
+                       "admin", "pro", new_stream_token())
+    token = new_session_token()
+    db.create_session(path, token,
+                      db.get_user_by_email(path, "admin@test.io")["id"],
+                      30 * 86400)
+    AUTH = {"X-Session-Token": token}
     return path
 
 
@@ -46,9 +57,9 @@ def patch_search(monkeypatch, candidates, errors="", meta=_META_SENTINEL):
     svc = CandidateService()
     calls = []
 
-    async def fake_search(vtype, video_id, keyword="", disks=None):
+    async def fake_search(vtype, video_id, keyword="", disks=None, cookie=""):
         calls.append({"vtype": vtype, "id": video_id, "kw": keyword,
-                      "disks": disks})
+                      "disks": disks, "cookie": cookie})
         return (meta if video_id else None), candidates, errors, \
             keyword or (meta.title if meta and video_id else "")
 
@@ -73,10 +84,10 @@ def patch_fetch_meta(monkeypatch, meta=None):
 def test_search_requires_token():
     assert client.get("/api/candidates/search?vtype=movie&id=tt5636724").status_code == 401
     assert client.get("/api/candidates/search?vtype=movie&id=tt5636724",
-                      headers={"X-Admin-Token": "wrong"}).status_code == 401
+                      headers={"X-Session-Token": "invalid"}).status_code == 401
 
 
-def test_search_ok(monkeypatch):
+def test_search_ok(tmp_db, monkeypatch):
     cands = [SearchCandidate(title="余罪 第1-2季", share_url=GOOD_URL, passcode="",
                              source="plugin:wanou", score=0.8)]
     svc = patch_search(monkeypatch, cands, errors="PanSou: 超时")
@@ -95,7 +106,7 @@ def test_search_ok(monkeypatch):
     assert r2.json()["keyword"] == "回魂夜"
 
 
-def test_search_meta_missing(monkeypatch):
+def test_search_meta_missing(tmp_db, monkeypatch):
     patch_search(monkeypatch, [], errors="TMDB 未收录 tt0000000",
                  meta=None)
     r = client.get("/api/candidates/search?vtype=movie&id=tt0000000", headers=AUTH)
@@ -104,13 +115,13 @@ def test_search_meta_missing(monkeypatch):
 
 # ---------- 独立搜索（无影片 ID）与网盘类型筛选 ----------
 
-def test_independent_search_requires_keyword(monkeypatch):
+def test_independent_search_requires_keyword(tmp_db, monkeypatch):
     """独立搜索模式：无 id 且无关键词 → 400。"""
     r = client.get("/api/candidates/search", headers=AUTH)
     assert r.status_code == 400 and "关键词" in r.json()["detail"]
 
 
-def test_independent_search_ok(monkeypatch):
+def test_independent_search_ok(tmp_db, monkeypatch):
     """无 id：仅按关键词搜索一次，meta 为 null，候选带 disk 字段。"""
     cands = [SearchCandidate(title="某剧 全集 4K", share_url=GOOD_URL,
                              source="plugin:x", score=0.8)]
@@ -122,10 +133,11 @@ def test_independent_search_ok(monkeypatch):
     assert data["keyword"] == "余罪"
     assert data["candidates"][0]["disk"] == "quark"
     assert svc.calls[-1] == {"vtype": "movie", "id": "", "kw": "余罪",
-                             "disks": None}  # 缺省 disks → Provider 默认仅夸克
+                             "disks": None, "cookie": ""}
+    # 缺省 disks → Provider 默认仅夸克
 
 
-def test_search_disks_param(monkeypatch):
+def test_search_disks_param(tmp_db, monkeypatch):
     """disks 参数：all → 不限（[]）；缺省 → None（Provider 默认夸克）；列表透传；未知 400。"""
     svc = patch_search(monkeypatch, [])
     r = client.get("/api/candidates/search?kw=x&disks=all", headers=AUTH)
@@ -177,7 +189,7 @@ def test_confirm_requires_token():
     assert client.post("/api/candidates/confirm", json={}).status_code == 401
 
 
-def test_confirm_rejects_bad_share_url(monkeypatch):
+def test_confirm_rejects_bad_share_url(tmp_db, monkeypatch):
     patch_fetch_meta(monkeypatch)
     for bad in ("https://evil.example/s/xxxx", "http://pan.quark.cn/s/abc",
                 "https://pan.baidu.com/s/1abcdef", GOOD_URL + "XX"):
@@ -225,7 +237,7 @@ def test_verify_requires_token():
     assert client.post("/api/candidates/verify", json={"items": []}).status_code == 401
 
 
-def test_verify_rejects_empty_and_invalid(monkeypatch):
+def test_verify_rejects_empty_and_invalid(tmp_db, monkeypatch):
     # items 缺失/为空
     for body in ({}, {"items": []}):
         r = client.post("/api/candidates/verify", json=body, headers=AUTH)
@@ -236,7 +248,7 @@ def test_verify_rejects_empty_and_invalid(monkeypatch):
     assert r.status_code == 400
 
 
-def test_verify_maps_states(monkeypatch):
+def test_verify_maps_states(tmp_db, monkeypatch):
     svc = CandidateService()
     calls = []
 
@@ -488,7 +500,7 @@ def patch_inspect(monkeypatch, result=None, error=None):
     svc = CandidateService()
     calls = []
 
-    async def fake_inspect(share_url, passcode="", cookie=None):
+    async def fake_inspect(share_url, passcode="", cookie=""):
         calls.append({"url": share_url, "passcode": passcode, "cookie": cookie})
         if error:
             raise RuntimeError(error)
@@ -507,23 +519,31 @@ def test_inspect_requires_token():
                        json={"share_url": GOOD_URL}).status_code == 401
 
 
-def test_inspect_rejects_invalid_url():
+def test_inspect_rejects_invalid_url(tmp_db):
     r = client.post("/api/candidates/inspect", headers=AUTH,
                     json={"share_url": "https://pan.baidu.com/s/1abcdef"})
     assert r.status_code == 400 and "分享链接无效" in r.json()["detail"]
 
 
-def test_inspect_ok(monkeypatch):
+def test_inspect_ok(tmp_db, monkeypatch):
+    # 用户未绑定 Cookie → 400 引导绑定
+    r = client.post("/api/candidates/inspect", headers=AUTH,
+                    json={"share_url": GOOD_URL, "passcode": "ax72"})
+    assert r.status_code == 400 and "绑定" in r.json()["detail"]
+    # 绑定后 → 使用本人 Cookie 解析
+    monkeypatch.setattr(cr.db, "load_user_cookie", lambda p, uid: "c=1")
     svc = patch_inspect(monkeypatch)
     r = client.post("/api/candidates/inspect", headers=AUTH,
                     json={"share_url": GOOD_URL, "passcode": "ax72"})
     assert r.status_code == 200
     assert r.json()["is_series"] is False
-    assert svc.inspect_calls == [{"url": GOOD_URL, "passcode": "ax72", "cookie": None}]
+    assert svc.inspect_calls == [{"url": GOOD_URL, "passcode": "ax72",
+                                  "cookie": "c=1"}]
 
 
-def test_inspect_provider_error(monkeypatch):
+def test_inspect_provider_error(tmp_db, monkeypatch):
     """分享失效/提取码错误等解析失败 → 400 带原因。"""
+    monkeypatch.setattr(cr.db, "load_user_cookie", lambda p, uid: "c=1")
     patch_inspect(monkeypatch, error="分享不存在")
     r = client.post("/api/candidates/inspect", headers=AUTH,
                     json={"share_url": GOOD_URL})
@@ -564,9 +584,8 @@ async def test_inspect_share_parses_files_and_seasons(tmp_db, monkeypatch):
             pass
 
     monkeypatch.setattr(cs_mod, "QuarkDriveProvider", FakeProvider)
-    monkeypatch.setattr(cs_mod.db, "load_cookie", lambda p: "c=1")
     svc = cs_mod.CandidateService(db_path=tmp_db)
-    data = await svc.inspect_share(GOOD_URL, "ax72")
+    data = await svc.inspect_share(GOOD_URL, "ax72", cookie="c=1")
     assert data["video_count"] == 3
     assert data["other_count"] == 2          # sample.mp4（垃圾）+ 说明.txt（非视频）
     assert data["is_series"] is True
@@ -585,20 +604,17 @@ async def test_inspect_share_no_cookie_raises(tmp_db, monkeypatch):
     """未绑定网盘账号时 inspect 报错（由路由转 400）。"""
     from app import candidate_service as cs_mod
 
-    monkeypatch.setattr(cs_mod.db, "load_cookie", lambda p: None)
-    monkeypatch.setattr(cs_mod.config, "QUARK_COOKIE", "")
     svc = cs_mod.CandidateService(db_path=tmp_db)
     try:
         await svc.inspect_share(GOOD_URL)
         assert False, "应当抛出 ProviderError"
     except cs_mod.ProviderError as e:
-        assert "授权" in str(e)
+        assert "未绑定" in str(e)
 
 
 # ---------- 页面骨架（前后端分离：页面为 web/ 静态文件，后端提供静态服务） ----------
 
-PAGES = ("/setup", "/search", "/candidates", "/task/some-id",
-         "/login", "/panel", "/admin")
+PAGES = ("/search", "/candidates", "/task/some-id", "/login", "/panel", "/admin")
 
 
 def test_pages_render():
@@ -635,35 +651,6 @@ def test_static_js_contains_no_python_artifacts():
     for page_path in PAGES:
         page = client.get(page_path).text
         assert "{title}" not in page  # 服务端模板占位符不应出现在静态页
-
-
-def test_setup_submit_rejects_bad_input(tmp_db, monkeypatch):
-    """POST /setup 返回 JSON 契约（{ok, message}）：令牌错误 403、Cookie 不完整 400。"""
-    r = client.post("/setup", data={"token": "wrong", "cookie": "a=1; __puus=x"})
-    assert r.status_code == 403 and r.json()["ok"] is False and "令牌" in r.json()["message"]
-    r = client.post("/setup", data={"token": "test-admin-token", "cookie": "kps=1"})
-    assert r.status_code == 400 and "__puus" in r.json()["message"]
-
-
-def test_setup_submit_ok_saves_cookie(tmp_db, monkeypatch):
-    from app import web_routes as wr
-
-    class FakeProvider:
-        def __init__(self, cookie=None, db_path=None):
-            self.cookie = cookie
-
-        async def verify(self):
-            return None
-
-        async def close(self):
-            return None
-
-    monkeypatch.setattr(wr, "QuarkDriveProvider", FakeProvider)
-    monkeypatch.setattr(wr.config, "DB_PATH", tmp_db)
-    r = client.post("/setup", data={"token": "test-admin-token",
-                                    "cookie": '  "kps=1; __puus=x"  '})
-    assert r.status_code == 200 and r.json()["ok"] is True
-    assert db.load_cookie(tmp_db) == "kps=1; __puus=x"  # 引号与空白已剥离
 
 
 # ---------- 阶段 7：搜索缓存（1 天） ----------
@@ -708,7 +695,6 @@ async def test_search_marks_no_video_content_bad(tmp_db, monkeypatch):
     from app.providers.base import ShareFile
 
     patch_real_search(monkeypatch, tmp_db, "FRIENDS")
-    db.save_cookie(tmp_db, "c=1")
 
     class FakeProvider:
         def __init__(self, cookie=None, db_path=None):
@@ -726,7 +712,7 @@ async def test_search_marks_no_video_content_bad(tmp_db, monkeypatch):
 
     monkeypatch.setattr(cs_mod, "QuarkDriveProvider", FakeProvider)
     svc = cs_mod.CandidateService(db_path=tmp_db)
-    m, cands, errs, kw = await svc.search("series", "tt5925192")
+    m, cands, errs, kw = await svc.search("series", "tt5925192", cookie="c=1")
     target = next(c for c in cands if c.share_url == URL_A)
     assert target.alive_state == "bad"           # 从"有效"中排除
     assert target.alive_summary == "内容无视频文件"
@@ -740,7 +726,6 @@ async def test_inspect_share_cached_one_day(tmp_db, monkeypatch):
     from app import candidate_service as cs_mod
     from app.providers.base import ShareFile
 
-    db.save_cookie(tmp_db, "c=1")
     calls = {"n": 0}
 
     class FakeProvider:
@@ -760,8 +745,8 @@ async def test_inspect_share_cached_one_day(tmp_db, monkeypatch):
 
     monkeypatch.setattr(cs_mod, "QuarkDriveProvider", FakeProvider)
     svc = cs_mod.CandidateService(db_path=tmp_db)
-    d1 = await svc.inspect_share(GOOD_URL)
-    d2 = await svc.inspect_share(GOOD_URL)
+    d1 = await svc.inspect_share(GOOD_URL, cookie="c=1")
+    d2 = await svc.inspect_share(GOOD_URL, cookie="c=1")
     assert calls["n"] == 1                       # 第二次走缓存
     assert d1 == d2 and d1["video_count"] == 1
 
@@ -810,8 +795,14 @@ def test_pages_app_name_injected():
         assert "{{APP_NAME" not in page           # 占位符已全部替换
 
 
-def test_manifest_name_is_app_name():
-    r = client.get("/manifest.json")
+def test_manifest_name_is_app_name(tmp_db, monkeypatch):
+    import app.stremio_routes as sr
+    monkeypatch.setattr(config, "DB_PATH", tmp_db)
+    from app.auth import hash_password, new_stream_token
+    tok = new_stream_token()
+    db.create_user(tmp_db, "m@test.io", hash_password("password123"),
+                   "user", "pro", tok)
+    r = client.get(f"/s/{tok}/manifest.json")
     assert r.status_code == 200
     assert r.json()["name"] == config.APP_NAME
 

@@ -22,8 +22,8 @@ def tmp_db(tmp_path):
     return path
 
 
-def make_provider(cookie: str, handler, tmp_db):
-    p = QuarkDriveProvider(cookie=cookie, db_path=tmp_db)
+def make_provider(cookie: str, handler, tmp_db, user_id: str = ""):
+    p = QuarkDriveProvider(cookie=cookie, db_path=tmp_db, user_id=user_id)
     p._client = AsyncClient(
         transport=MockTransport(handler), timeout=10,
         headers={"Cookie": cookie, "Referer": "https://pan.quark.cn/",
@@ -47,14 +47,15 @@ async def test_search_and_puus_absorb(tmp_db):
             {"fid": "d1", "file_name": "目录", "size": 0, "dir": True},
         ]}), headers={"Set-Cookie": "__puus=new-puus; path=/; domain=.quark.cn"})
 
-    p = make_provider("kps=a; sign=b; __puus=old-puus", handler, tmp_db)
+    p = make_provider("kps=a; sign=b; __puus=old-puus", handler, tmp_db,
+                      user_id="u1")
     try:
         files = await p.search_files("余罪")
         assert len(files) == 1 and files[0].fid == "f1" and not files[0].is_dir
         assert p._cookie.endswith("__puus=new-puus")
         assert "old-puus" not in p._cookie
-        # __puus 已回写数据库
-        assert db.load_cookie(tmp_db).endswith("__puus=new-puus")
+        # __puus 已回写该用户的加密凭证
+        assert db.load_user_cookie(tmp_db, "u1").endswith("__puus=new-puus")
     finally:
         await p.close()
 

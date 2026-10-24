@@ -26,9 +26,9 @@
     </dl>
   </div>
 
-  <!-- 网盘凭证 -->
+  <!-- 夸克网盘凭证 -->
   <div class="card">
-    <h1>网盘凭证</h1>
+    <h1>夸克网盘凭证</h1>
     <p class="meta">绑定你自己的夸克网盘 Cookie：搜索、解析分享内容与转存全部使用
       你本人的网盘账号，与他人互不可见。获取方式：浏览器登录 pan.quark.cn →
       F12 → 应用(Application) → Cookie → 复制整串（须包含 <code>__puus</code>）。</p>
@@ -39,15 +39,16 @@
       <label for="ck-input">Cookie 内容（含 __puus 的完整字符串）</label>
       <textarea id="ck-input" placeholder="kps=…; sign=…; __puus=…"></textarea>
       <button type="submit">保存绑定</button>
-      <button type="button" class="sec" id="ck-unbind">解除绑定</button>
+      <button type="button" class="sec" id="ck-check" hidden>检测状态</button>
+      <button type="button" class="sec" id="ck-unbind" hidden>解除绑定</button>
     </form>
   </div>
 
   <!-- 保存目录 -->
   <div class="card">
     <h1>转存保存目录</h1>
-    <p class="meta">转存的文件将保存到你网盘根目录下此文件夹（不存在会自动创建）；
-      留空表示使用服务器默认目录。</p>
+    <p class="meta">转存的文件将保存到你网盘根目录下此文件夹（不存在会自动创建）。
+      <span id="sd-default-tip">留空表示使用服务器默认目录。</span></p>
     <div class="row">
       <input id="sd-input" maxlength="64" placeholder="例如：影视资源">
       <button type="button" id="sd-save">保存</button>

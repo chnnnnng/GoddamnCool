@@ -1,10 +1,8 @@
 """认证与鉴权：密码哈希、会话 token、请求身份解析。
 
-三种身份来源（优先级从高到低）：
-1. X-Admin-Token == ADMIN_TOKEN：旧版全局管理令牌（虚拟管理员，无用户隔离，
-   走全局 Cookie/TMDB key，兼容已有 Stremio Add-on 配置与脚本）；
-2. X-Session-Token / Authorization: Bearer：注册用户会话；
-3. 未认证。
+身份来源（二选一）：
+1. X-Session-Token / Authorization: Bearer：注册用户会话；
+2. 未认证。
 """
 import hashlib
 import hmac
@@ -60,23 +58,15 @@ def _bearer(request: Request) -> str:
 
 
 def resolve_user(request: Request) -> dict | None:
-    """解析请求身份。旧版 X-Admin-Token 匹配时返回虚拟管理员（legacy，
-    走全局 Cookie/TMDB key，不参与用户隔离与配额）。"""
-    admin = request.headers.get("X-Admin-Token", "")
-    if config.ADMIN_TOKEN and admin and hmac.compare_digest(admin, config.ADMIN_TOKEN):
-        return {"id": "", "email": "(admin-token)", "role": "admin",
-                "tier": "pro", "legacy": True}
+    """解析请求身份：会话 token → 注册用户；否则 None。"""
     token = _session_token(request)
     if not token:
         return None
-    user = db.get_session_user(config.DB_PATH, token)
-    if user:
-        user["legacy"] = False
-    return user
+    return db.get_session_user(config.DB_PATH, token)
 
 
 def require_user(request: Request) -> tuple[dict | None, JSONResponse | None]:
-    """要求已登录（含 legacy admin-token）。失败返回 (None, 401)。"""
+    """要求已登录。失败返回 (None, 401)。"""
     user = resolve_user(request)
     if user is None:
         return None, JSONResponse({"detail": "请先登录"}, status_code=401)

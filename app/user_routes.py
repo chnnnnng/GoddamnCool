@@ -1,7 +1,7 @@
-"""用户面板 API：绑定个人网盘 Cookie、自定义保存目录、改密码、轮换 Add-on 令牌、我的任务。
+"""用户面板 API：绑定个人网盘 Cookie、状态检测、自定义保存目录、改密码、
+轮换 Add-on 令牌、我的任务。
 
-所有接口要求登录（X-Session-Token）；旧版 X-Admin-Token 虚拟用户不支持
-（其绑定走 /setup 全局凭证，返回 403 提示）。
+所有接口要求登录（X-Session-Token）。
 
 Cookie 为敏感数据：经 Fernet 加密落库 user_cookies 表，接口永不回显明文，
 仅返回绑定状态。TMDB key 由管理员统一配置，普通用户不可见。
@@ -19,14 +19,7 @@ router = APIRouter()
 
 
 def _real_user(request: Request) -> tuple[dict | None, JSONResponse | None]:
-    user, err = require_user(request)
-    if err:
-        return None, err
-    if user["legacy"]:
-        return None, JSONResponse(
-            {"detail": "旧版管理令牌不支持用户面板，请注册账号登录"},
-            status_code=403)
-    return user, None
+    return require_user(request)
 
 
 def _clean_cookie(raw: str) -> str:
@@ -65,6 +58,26 @@ async def unbind_cookie(request: Request):
         return err
     db.delete_user_cookie(config.DB_PATH, user["id"])
     return {"ok": True, "message": "已解除网盘 Cookie 绑定"}
+
+
+@router.post("/api/me/cookie/check")
+async def check_cookie(request: Request):
+    """检测已绑定的网盘 Cookie 是否仍然有效（实时调用夸克验证接口）。"""
+    user, err = _real_user(request)
+    if err:
+        return err
+    cookie = db.load_user_cookie(config.DB_PATH, user["id"])
+    if not cookie:
+        return JSONResponse({"detail": "尚未绑定网盘 Cookie"}, status_code=400)
+    provider = QuarkDriveProvider(cookie=cookie, db_path=config.DB_PATH,
+                                  user_id=user["id"])
+    try:
+        await provider.verify()
+    except ProviderError as e:
+        return {"ok": False, "message": f"Cookie 已失效：{e}，请重新绑定"}
+    finally:
+        await provider.close()
+    return {"ok": True, "message": "Cookie 有效，网盘登录态正常"}
 
 
 @router.post("/api/me/save_dir")

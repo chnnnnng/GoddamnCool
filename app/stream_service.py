@@ -39,31 +39,28 @@ class StreamService:
 
     # ---- Provider 管理 ----
 
-    def load_cookie(self) -> str | None:
-        return db.load_cookie(self.db_path) or (config.QUARK_COOKIE or None)
-
-    def create_provider(self, cookie: str) -> CloudDriveProvider:
-        return QuarkDriveProvider(cookie=cookie, db_path=self.db_path)
+    def create_provider(self, cookie: str,
+                        user_id: str = "") -> CloudDriveProvider:
+        return QuarkDriveProvider(cookie=cookie, db_path=self.db_path,
+                                  user_id=user_id)
 
     # ---- 主流程 ----
 
-    async def get_streams(self, vtype: str, video_id: str,
-                          cookie: str | None = None,
+    async def get_streams(self, vtype: str, video_id: str, cookie: str,
                           user_id: str | None = None) -> tuple[list[dict], str]:
         """返回 (stremio stream 列表, 状态说明)。任何失败均返回列表不抛出。
 
-        cookie: 调用者自己的网盘 Cookie；None → 回退服务端全局凭证（legacy）。
+        cookie: 调用者自己绑定的网盘 Cookie（多用户隔离，必传）；
         user_id: 任务归属过滤（None 不过滤兼容旧调用；'' 仅全局任务）。
         TMDB key 由管理员统一配置（settings）。
         """
-        cookie = cookie or self.load_cookie()
         if not cookie:
-            return [], "未绑定网盘账号，请访问 /panel 绑定网盘 Cookie"
+            return [], "未绑定网盘 Cookie，请在控制面板绑定"
         imdb_id, season, episode = parse_video_id(video_id)
         meta = await fetch_meta(imdb_id, vtype, self.db_path)
         if meta is None or not meta.title:
             return [], f"TMDB 未收录 {video_id}"
-        provider = self.create_provider(cookie)
+        provider = self.create_provider(cookie, user_id=user_id or "")
         try:
             return await self._streams_for(provider, meta, vtype, video_id,
                                            season, episode, user_id)
@@ -203,23 +200,15 @@ class StreamService:
 
     def _to_stream(self, resource, reason: str) -> dict:
         quality = parse(resource.filename).resolution or ""
-        use_proxy = config.PROXY_STREAM and bool(config.BASE_URL)
-        if use_proxy:
-            from .proxy import make_proxy_url
-
-            url = make_proxy_url(resource.fid)
-        else:
-            url = resource.url
         hints = {
-            "notWebReady": not use_proxy,  # 代理后无需请求头，Web 端亦可直连
+            "notWebReady": True,  # 客户端直连 CDN，需携带请求头（Web 端不支持）
             "bingeGroup": f"{resource.source_name}-{parse(resource.filename).title or 'video'}",
             "filename": resource.filename,
             "videoSize": resource.video_size,
+            "proxyHeaders": {"request": resource.headers},
         }
-        if not use_proxy:
-            hints["proxyHeaders"] = {"request": resource.headers}
         return {
-            "url": url,
+            "url": resource.url,
             "name": f"{resource.source_name}\n{quality}".rstrip(),
             "title": resource.filename,
             "description": f"{reason}\n{resource.filename}",

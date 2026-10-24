@@ -107,12 +107,6 @@ def test_me_payload_and_logout(tmp_db):
     assert client.get("/api/auth/me", headers=H(token)).status_code == 401
 
 
-def test_legacy_admin_token_still_works(tmp_db):
-    """旧版 X-Admin-Token 依旧可用（虚拟管理员，legacy 标记）。"""
-    r = client.get("/api/auth/me", headers={"X-Admin-Token": INVITE})
-    assert r.status_code == 200 and r.json()["legacy"] is True
-
-
 def test_change_password(tmp_db):
     token = register("pw@test.io", password="oldpassword").json()["token"]
     # 原密码错误

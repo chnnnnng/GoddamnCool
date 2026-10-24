@@ -33,7 +33,7 @@ def patched_search(monkeypatch):
     """隔离外部来源与 TMDB：search 恒返回一个候选。"""
     svc = CandidateService()
 
-    async def fake_search(vtype, video_id, keyword="", disks=None):
+    async def fake_search(vtype, video_id, keyword="", disks=None, cookie=""):
         return None, [], "", keyword
 
     monkeypatch.setattr(svc, "search", fake_search)
@@ -85,12 +85,6 @@ def test_quota_not_counted_on_param_error(tmp_db, patched_search):
     assert client.get("/api/candidates/search",
                       headers=H(lite["token"])).status_code == 400
     assert db.get_search_count(tmp_db, lite["user"]["id"]) == 0
-
-
-def test_legacy_admin_token_unlimited(tmp_db, patched_search):
-    auth = {"X-Admin-Token": INVITE}
-    for _ in range(25):
-        assert client.get("/api/candidates/search?kw=x", headers=auth).status_code == 200
 
 
 # ---------- Lite 每日转存配额 ----------

@@ -1,9 +1,7 @@
-"""Stremio 协议端点。
+"""Stremio 协议端点：每用户专属 Add-on /s/{stream_token}/...。
 
-- 旧版全局端点 /manifest.json、/stream/...：走服务端全局凭证（X-Admin-Token
-  时代遗留配置，兼容不中断）；
-- 每用户端点 /s/{stream_token}/...：注册用户在控制面板获取的专属 Add-on 地址，
-  播放/搜索/转存均使用该用户自己绑定的网盘 Cookie 与 TMDB key，任务按用户隔离。
+注册用户在控制面板获取专属 Add-on 地址，播放/搜索/转存均使用该用户自己
+绑定的网盘 Cookie，任务按用户隔离。
 """
 from urllib.parse import quote
 
@@ -38,17 +36,6 @@ def _stream_response(streams: list[dict], status: str) -> JSONResponse:
     )
 
 
-@router.get("/manifest.json")
-async def manifest():
-    return _manifest()
-
-
-@router.get("/stream/{vtype}/{video_id}.json")
-async def stream(vtype: str, video_id: str):
-    streams, status = await service.get_streams(vtype, video_id)
-    return _stream_response(streams, status)
-
-
 @router.get("/s/{stream_token}/manifest.json")
 async def user_manifest(stream_token: str):
     user = db.get_user_by_stream_token(config.DB_PATH, stream_token)
@@ -67,7 +54,7 @@ async def user_stream(stream_token: str, vtype: str, video_id: str):
         return _stream_response([], "账号已被禁用，请联系管理员")
     cookie = db.load_user_cookie(config.DB_PATH, user["id"])
     if not cookie:
-        # 未绑定 Cookie 时严格隔离：绝不回退全局凭证，直接给绑定引导
+        # 未绑定 Cookie 时严格隔离：直接给绑定引导
         guide = []
         if config.BASE_URL:
             guide = [{

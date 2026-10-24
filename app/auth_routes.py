@@ -6,7 +6,7 @@
 - 暂不做邮箱验证，仅要求格式含 @ 且密码 >= 8 位。
 
 会话为纯 header token（X-Session-Token / Authorization: Bearer），由前端保存在
-localStorage，不进 URL、不落日志（与原 X-Admin-Token 方案一致的威胁模型）。
+localStorage，不进 URL、不落日志。
 """
 import hmac
 
@@ -90,7 +90,7 @@ async def logout(request: Request):
 
 def _quota_payload(user: dict) -> dict:
     """两级配额回显（搜索/转存）：Pro 与管理员不限。"""
-    unlimited = user["legacy"] or user["role"] == "admin" or user["tier"] == "pro"
+    unlimited = user["role"] == "admin" or user["tier"] == "pro"
     return {
         "search": {
             "used": db.get_search_count(config.DB_PATH, user["id"]),
@@ -110,20 +110,13 @@ async def me(request: Request):
     user, err = require_user(request)
     if err:
         return err
-    if user["legacy"]:
-        # 旧版 X-Admin-Token：全局上下文
-        return {
-            "email": user["email"], "role": "admin", "tier": "pro",
-            "legacy": True, "created_at": "", "save_dir": "",
-            "cookie_bound": db.load_cookie(config.DB_PATH) is not None,
-            "quota": _quota_payload(user),
-            "addon_url": f"{config.BASE_URL}/manifest.json",
-        }
     cookie_bound = db.load_user_cookie(config.DB_PATH, user["id"]) is not None
     return {
         "email": user["email"], "role": user["role"], "tier": user["tier"],
-        "legacy": False, "created_at": user["created_at"],
+        "created_at": user["created_at"],
         "save_dir": user.get("save_dir") or "",
+        # 服务器默认保存目录（管理员在 /admin 配置；空表示网盘根目录）
+        "default_save_dir": settings.get("TRANSFER_DIR") or "",
         "cookie_bound": cookie_bound,
         "quota": _quota_payload(user),
         "addon_url": f"{config.BASE_URL}/s/{user['stream_token']}/manifest.json",
