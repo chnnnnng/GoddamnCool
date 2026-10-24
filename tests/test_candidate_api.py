@@ -838,6 +838,33 @@ def test_task_api_files_name_warn(tmp_db, monkeypatch):
     assert files[0]["name_ok"] is False and "集数" in files[0]["warn"]
 
 
+def test_task_api_files_warn_rules(tmp_db, monkeypatch):
+    """警告规则：纯集数名→无标题提示；非视频文件不检查；episode 任务中的
+    电影文件→缺集数提示；whole 任务（无季集目标）标准命名不提示。"""
+    patch_fetch_meta(monkeypatch)
+    task_id = _confirm().json()["task_id"]
+    db.set_task_fields(tmp_db, task_id, result_json=json.dumps(
+        {"mode": "bulk", "names": ["SE03.11.mp4", "tvshow.nfo"]}))
+    db.update_task_status(tmp_db, task_id, "COMPLETED")
+    files = {f["name"]: f for f in
+             client.get(f"/api/task/{task_id}", headers=AUTH).json()["files"]}
+    assert "标题" in files["SE03.11.mp4"]["warn"]
+    assert files["tvshow.nfo"]["warn"] == ""
+    # episode 任务（目标 S01E12）里落了电影文件：无集数标注应提示
+    movie = "X.Men.Apocalypse.2016.1080p.BluRay.x264.DTS-WiKi.MKV"
+    db.set_task_fields(tmp_db, task_id,
+                       result_json=json.dumps({"mode": "bulk", "names": [movie]}))
+    assert "集数" in client.get(f"/api/task/{task_id}",
+                               headers=AUTH).json()["files"][0]["warn"]
+    # whole 任务（无季集目标）：标准命名的电影文件不提示
+    tid2 = _confirm(mode="whole").json()["task_id"]
+    db.set_task_fields(tmp_db, tid2,
+                       result_json=json.dumps({"mode": "bulk", "names": [movie]}))
+    db.update_task_status(tmp_db, tid2, "COMPLETED")
+    f2 = client.get(f"/api/task/{tid2}", headers=AUTH).json()["files"][0]
+    assert f2["warn"] == ""
+
+
 def test_manifest_addon_settings_override(tmp_db, monkeypatch):
     """ADDON_ID / ADDON_DESCRIPTION / ADDON_ICON 运行时配置生效于 manifest。"""
     import app.settings as settings

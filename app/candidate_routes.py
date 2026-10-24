@@ -19,13 +19,15 @@
 - 任务 ID 为 uuid4 hex，防猜测遍历；影片标题以服务端 TMDB 结果为准。
 """
 import json
+import os
+import re
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
 from . import config, db, settings
 from .auth import require_user
-from .matcher import parse, parse_file_spec
+from .matcher import VIDEO_EXTS, parse, parse_file_spec
 from .tmdb import fetch_meta
 from .providers.search import SHARE_URL_RE
 from .candidate_service import CandidateService
@@ -91,14 +93,15 @@ async def candidates_search(request: Request, vtype: str = "movie", id: str = ""
         return JSONResponse({"detail": str(e)}, status_code=400)
     if not id and not kw.strip():
         return JSONResponse({"detail": "请输入搜索关键词"}, status_code=400)
-    # Lite 每日配额：参数校验通过后计次（无论结果成败），超限 429 拒绝
+    # 每日配额：所有用户都计次（面板统计展示真实用量），
+    # 仅 Lite 用户在超限时 429 拒绝（Pro/管理员不限额）
     if not _unlimited(user):
         limit = settings.get("LITE_DAILY_SEARCH_LIMIT")
         if db.get_search_count(config.DB_PATH, user["id"]) >= limit:
             return JSONResponse(
                 {"detail": f"今日搜索次数已用完（{limit}/{limit}），升级 Pro 解除限制"},
                 status_code=429)
-        db.incr_search_count(config.DB_PATH, user["id"])
+    db.incr_search_count(config.DB_PATH, user["id"])
     user_cookie = db.load_user_cookie(config.DB_PATH, user["id"]) or ""
     meta, cands, errors, keyword = await candidate_service.search(
         vtype, id, keyword=kw, disks=disk_list, cookie=user_cookie)
@@ -196,7 +199,7 @@ async def candidates_confirm(request: Request):
         source=(body.get("source") or "")[:100],
         mode=mode, picks=picks, user_id=user["id"],
     )
-    if created and not _unlimited(user):
+    if created:  # 新任务计次（幂等复用既有活跃任务不消耗）；Pro/管理员不限额
         db.incr_transfer_count(config.DB_PATH, user["id"])
     return {"task_id": task["id"], "created": created, "status": task["status"]}
 
@@ -274,13 +277,24 @@ def _spec_badges(name: str) -> list[str]:
     return out
 
 
+# 仅剩季集/集数 token 的"无标题"文件名（如 SE03.11 / 06 / EP06 / 第11集）——
+# 与 matcher 一样无法凭标题定位，换源或分享重发后会匹配失败
+_TITLELESS_TOKEN = re.compile(
+    r"(?i)^(?:s\d{1,2}e\d{1,3}|se\d{1,2}(?:[.\-_ ]?\d{1,3})?|\d{1,3}x\d{1,3}|"
+    r"ep?\d{1,3}|s\d{1,2}|e\d{1,3}|\d{1,3}|"
+    r"第\s*\d{1,3}\s*[集话期]|第\s*[0-9一二三四五六七八九十百]+\s*季)$")
+
+
 def _name_warn(name: str, season: int | None, episode: int | None) -> str:
     """文件名疑似不符合匹配规范时的修改提示（命名应含标题与季集信息）。
-    规则与 Stream 侧 matcher 一致：解析不出标题、或剧集任务解析不出集数
-    （含裸集数文件名）即视为不规范——这类文件下次转存/播放需靠任务短路
-    定位，分享重发或换源后可能匹配失败。"""
+    规则与 Stream 侧 matcher 一致：仅视频文件参与检查；剥除季集/集数标注后
+    无剩余文字视为无标题；剧集任务解析不出集数（含裸集数文件名）同样提示。"""
+    if os.path.splitext(name)[1].lower() not in VIDEO_EXTS:
+        return ""  # 非视频文件（nfo/海报等）不参与命名规范检查
     p = parse(name)
-    if not p.title:
+    stem = re.sub(r"^\[.*?\]", "", os.path.splitext(name)[0])
+    if not [t for t in re.split(r"[\s._\-\[\]()]+", stem)
+            if t and not _TITLELESS_TOKEN.match(t)]:
         return "未识别出标题，建议改为「影片名 S01E02」等规范命名"
     if episode is not None and p.episode is None:
         return "未识别出集数，建议在文件名中补充 SxxEyy 标注"

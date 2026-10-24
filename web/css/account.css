@@ -51,7 +51,8 @@ th { color: var(--dim); font-weight: 500; font-size: .8rem; }
 td.wrap { white-space: normal; overflow-wrap: anywhere; }
 td button { min-height: 34px; padding: 4px 10px; font-size: .8rem;
             margin: 2px 4px 2px 0; }
-td button.danger { background: var(--err-bg); color: var(--err-fg); }
+td button.danger, #u-modal button.danger,
+.danger { background: var(--err-bg); color: var(--err-fg); }
 
 /* 行内表单组 */
 .row { display: flex; gap: 8px; align-items: stretch; flex-wrap: wrap; }

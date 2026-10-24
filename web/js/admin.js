@@ -63,7 +63,7 @@
     kvRow('角色', u.role === 'admin' ? '管理员' : '用户');
     kvRow('级别', u.tier === 'pro' ? 'Pro' : 'Lite');
     kvRow('状态', u.disabled ? '已禁用' : '正常');
-    kvRow('网盘', u.cookie_bound ? '已绑定' : '未绑定');
+    kvRow('网盘', u.cookie_bound ? '夸克网盘 - 已绑定' : '未绑定');
     kvRow('今日搜索', String(u.quota_used));
     kvRow('今日转存', String(u.transfer_used));
     kvRow('任务数', String(u.task_count));
