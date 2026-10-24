@@ -99,15 +99,22 @@ form button[type="submit"] { margin-top: 14px; }
   word-break: break-all;
 }
 #toast.show { opacity: 1; visibility: visible; transform: translate(-50%, 0); }
-/* 加载态气泡：spinner 动画 + 文字 */
+/* 加载态气泡：spinner 动画 + 文字（主题绿） */
 #toast.loading { display: flex; align-items: center; gap: 10px;
-                 border-color: var(--acc, #7aa2f7); }
+                 border-color: var(--accent); }
 #toast.loading::before {
   content: ''; width: 16px; height: 16px; flex: none;
-  border: 2px solid var(--dim-fg, #8b93a1); border-top-color: transparent;
+  border: 2px solid var(--accent); border-top-color: transparent;
   border-radius: 50%; animation: toast-spin .8s linear infinite;
 }
 @keyframes toast-spin { to { transform: rotate(360deg); } }
+/* 任务页进行中状态徽章：等待执行/正在提交转存带 spinner */
+.status.s-PENDING::before, .status.s-SUBMITTING::before {
+  content: ''; display: inline-block; width: 12px; height: 12px;
+  border: 2px solid currentColor; border-top-color: transparent;
+  border-radius: 50%; margin-right: 7px; vertical-align: -1px;
+  animation: toast-spin .8s linear infinite;
+}
 /* 状态/角色徽章（panel/task/admin/search 各页共用） */
 .badge { display: inline-block; padding: 3px 10px; border-radius: 2px;
          font-size: .8rem; font-weight: 600; margin-left: 6px;
