@@ -47,14 +47,17 @@ function el(tag, cls, text) {
   return e;
 }
 
+// 消息提示：页面顶部气泡 toast（自动消失），替代底部行内消息条。
 function showMsg(text, ok) {
-  const m = document.getElementById('msg');
-  if (!m) return;
-  if (!text) {  // 空文本 = 清除消息（还原为隐藏态，避免残留空的消息条）
-    m.className = 'msg';
-    m.textContent = '';
-    return;
+  if (!text) return;  // 空文本 = 无操作（气泡自动消失，无需手动清除）
+  var t = document.getElementById('toast');
+  if (!t) {
+    t = document.createElement('div');
+    t.id = 'toast';
+    document.body.appendChild(t);
   }
-  m.className = 'msg ' + (ok ? 'ok' : 'err');
-  m.textContent = text;
+  t.textContent = text;
+  t.className = 'show ' + (ok ? 'ok' : 'err');
+  clearTimeout(showMsg._timer);
+  showMsg._timer = setTimeout(function () { t.className = ''; }, 3500);
 }

@@ -2,7 +2,7 @@
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse, Response
 
-from . import config
+from . import config, settings
 
 router = APIRouter()
 
@@ -12,7 +12,7 @@ def page(name: str) -> Response:
     页面内的 {{APP_NAME}} 占位符在返回前替换为配置的产品名称。"""
     html = (config.WEB_DIR / name).read_text(encoding="utf-8")
     return Response(
-        html.replace("{{APP_NAME}}", config.APP_NAME),
+        html.replace("{{APP_NAME}}", settings.get("APP_NAME")),
         media_type="text/html",
         headers={"Cache-Control": "no-store"},
     )

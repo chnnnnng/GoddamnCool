@@ -11,8 +11,8 @@
 
   function quotaText(q) {
     if (!q) return '…';
-    if (q.unlimited) return '不限';
-    return q.used + ' / ' + q.limit;
+    // Pro/管理员不限 → "2/∞"；Lite → "2/50"
+    return q.used + ' / ' + (q.unlimited ? '∞' : q.limit);
   }
 
   function renderAccount() {
@@ -20,9 +20,11 @@
     var roleEl = document.getElementById('acc-role');
     roleEl.textContent = meData.role === 'admin' ? '管理员' : '用户';
     roleEl.className = 'badge' + (meData.role === 'admin' ? ' ok' : '');
+    roleEl.hidden = false;
     var tierEl = document.getElementById('acc-tier');
     tierEl.textContent = meData.tier === 'pro' ? 'Pro' : 'Lite';
     tierEl.className = 'badge' + (meData.tier === 'pro' ? ' ok' : ' warn');
+    tierEl.hidden = false;
     document.getElementById('acc-quota-search').textContent =
       quotaText(meData.quota && meData.quota.search);
     document.getElementById('acc-quota-transfer').textContent =

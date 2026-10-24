@@ -8,7 +8,9 @@
 
   document.getElementById('btn-logout').addEventListener('click', logout);
 
-  // ---- 用户表格 ----
+  // ---- 用户表格（仅邮箱/角色/级别 + 详情入口；完整信息在弹窗中） ----
+
+  var allUsers = [];  // 缓存全量用户，搜索框做前端过滤
 
   function opBtn(text, fn, cls) {
     var b = el('button', cls || 'sec', text);
@@ -30,54 +32,98 @@
     tbody.textContent = '';
     if (!users.length) {
       var tr0 = el('tr');
-      var td0 = el('td', 'meta', '暂无用户');
-      td0.colSpan = 9;
+      var td0 = el('td', 'meta', '无匹配用户');
+      td0.colSpan = 4;
       tr0.appendChild(td0);
       tbody.appendChild(tr0);
       return;
     }
     users.forEach(function (u) {
       var tr = el('tr');
+      if (u.disabled) tr.style.opacity = '.5';
       tr.appendChild(el('td', null, u.email));
       tr.appendChild(el('td', null, u.role === 'admin' ? '管理员' : '用户'));
       tr.appendChild(el('td', null, u.tier === 'pro' ? 'Pro' : 'Lite'));
-      tr.appendChild(el('td', null, u.cookie_bound ? '已绑定' : '未绑定'));
-      tr.appendChild(el('td', null, String(u.quota_used)));
-      tr.appendChild(el('td', null, String(u.transfer_used)));
-      tr.appendChild(el('td', null, String(u.task_count)));
-      tr.appendChild(el('td', null, u.created_at || ''));
-      if (u.disabled) tr.style.opacity = '.5';
-
       var ops = el('td', 'wrap');
-      ops.appendChild(opBtn(u.tier === 'pro' ? '降 Lite' : '升 Pro',
-        function () { return act(u.id, { tier: u.tier === 'pro' ? 'lite' : 'pro' },
-          '已更新级别'); }));
-      ops.appendChild(opBtn(u.role === 'admin' ? '撤管理员' : '设管理员',
-        function () { return act(u.id, { role: u.role === 'admin' ? 'user' : 'admin' },
-          '已更新角色'); }));
-      ops.appendChild(opBtn(u.disabled ? '启用' : '禁用',
-        function () { return act(u.id, { disabled: !u.disabled },
-          u.disabled ? '已启用' : '已禁用（会话已清除）'); }));
-      ops.appendChild(opBtn('重置密码', function () {
-        var pw = prompt('输入新密码（至少 8 位）');
-        if (pw === null) return;
-        if (pw.length < 8) { showMsg('密码至少 8 位', false); return; }
-        return act(u.id, { password: pw }, '密码已重置');
-      }));
-      ops.appendChild(opBtn('删除', function () {
-        if (!confirm('确定删除用户 ' + u.email + '？其会话与网盘绑定将被清除，任务记录保留。')) return;
-        api('/api/admin/users/' + u.id, { method: 'DELETE' })
-          .then(function () { showMsg('已删除', true); loadUsers(); })
-          .catch(function (e) { showMsg(e.message, false); });
-      }, 'danger'));
+      ops.appendChild(opBtn('详情', function () { openUserModal(u); }));
       tr.appendChild(ops);
       tbody.appendChild(tr);
     });
   }
 
+  // 用户详情弹窗：完整信息 + 全部操作（表格行与搜索结果共用）
+  function openUserModal(u) {
+    document.getElementById('um-email').textContent = u.email;
+    var kv = document.getElementById('um-kv');
+    kv.textContent = '';
+    function kvRow(k, v) {
+      kv.appendChild(el('dt', null, k));
+      kv.appendChild(el('dd', null, v));
+    }
+    kvRow('角色', u.role === 'admin' ? '管理员' : '用户');
+    kvRow('级别', u.tier === 'pro' ? 'Pro' : 'Lite');
+    kvRow('状态', u.disabled ? '已禁用' : '正常');
+    kvRow('网盘', u.cookie_bound ? '已绑定' : '未绑定');
+    kvRow('今日搜索', String(u.quota_used));
+    kvRow('今日转存', String(u.transfer_used));
+    kvRow('任务数', String(u.task_count));
+    kvRow('保存目录', u.save_dir || '（默认）');
+    kvRow('注册时间', u.created_at || '');
+
+    var ops = document.getElementById('um-ops');
+    ops.textContent = '';
+    ops.appendChild(opBtn(u.tier === 'pro' ? '降 Lite' : '升 Pro',
+      function () { return act(u.id, { tier: u.tier === 'pro' ? 'lite' : 'pro' },
+        '已更新级别'); }));
+    ops.appendChild(opBtn(u.role === 'admin' ? '撤管理员' : '设管理员',
+      function () { return act(u.id, { role: u.role === 'admin' ? 'user' : 'admin' },
+        '已更新角色'); }));
+    ops.appendChild(opBtn(u.disabled ? '启用' : '禁用',
+      function () { return act(u.id, { disabled: !u.disabled },
+        u.disabled ? '已启用' : '已禁用（会话已清除）'); }));
+    ops.appendChild(opBtn('重置密码', function () {
+      var pw = prompt('输入新密码（至少 8 位）');
+      if (pw === null) return;
+      if (pw.length < 8) { showMsg('密码至少 8 位', false); return; }
+      return act(u.id, { password: pw }, '密码已重置');
+    }));
+    ops.appendChild(opBtn('删除', function () {
+      if (!confirm('确定删除用户 ' + u.email + '？其会话与网盘绑定将被清除，任务记录保留。')) return;
+      api('/api/admin/users/' + u.id, { method: 'DELETE' })
+        .then(function () { showMsg('已删除', true); loadUsers(); })
+        .catch(function (e) { showMsg(e.message, false); });
+    }, 'danger'));
+    document.getElementById('u-modal').classList.add('show');
+  }
+
+  function closeUserModal() {
+    document.getElementById('u-modal').classList.remove('show');
+  }
+  document.getElementById('u-modal-close').addEventListener('click', closeUserModal);
+  document.getElementById('u-modal').addEventListener('click', function (ev) {
+    if (ev.target === this) closeUserModal();  // 点遮罩关闭
+  });
+  document.addEventListener('keydown', function (ev) {
+    if (ev.key === 'Escape') closeUserModal();
+  });
+
+  // 用户搜索：按邮箱子串过滤（前端过滤缓存列表）
+  document.getElementById('u-search').addEventListener('input', function () {
+    var kw = this.value.trim().toLowerCase();
+    renderUsers(!kw ? allUsers
+      : allUsers.filter(function (u) {
+          return u.email.toLowerCase().indexOf(kw) >= 0; }));
+  });
+
   function loadUsers() {
     api('/api/admin/users')
-      .then(function (r) { renderUsers(r.users || []); })
+      .then(function (r) {
+        allUsers = r.users || [];
+        var kw = document.getElementById('u-search').value.trim().toLowerCase();
+        renderUsers(!kw ? allUsers
+          : allUsers.filter(function (u) {
+              return u.email.toLowerCase().indexOf(kw) >= 0; }));
+      })
       .catch(function (e) { showMsg(e.message, false); });
   }
 

@@ -18,11 +18,14 @@
 - 确认转存时服务端校验分享链接格式（仅夸克官方分享域，防 SSRF/任意 URL）；
 - 任务 ID 为 uuid4 hex，防猜测遍历；影片标题以服务端 TMDB 结果为准。
 """
+import json
+
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
 from . import config, db, settings
 from .auth import require_user
+from .matcher import parse, parse_file_spec
 from .tmdb import fetch_meta
 from .providers.search import SHARE_URL_RE
 from .candidate_service import CandidateService
@@ -259,6 +262,63 @@ async def task_page(task_id: str):
     return page("task.html")
 
 
+def _spec_badges(name: str) -> list[str]:
+    """从文件名提取规格标注（分辨率/来源/编码/音频/字幕/语言），去重保序。"""
+    spec = parse_file_spec(name)
+    out: list[str] = []
+    for v in (spec.get("resolution"), spec.get("source"), spec.get("codec"),
+              *spec.get("audio", []), *spec.get("subtitle", []),
+              *spec.get("languages", [])):
+        if v and v not in out:
+            out.append(v)
+    return out
+
+
+def _name_warn(name: str, season: int | None, episode: int | None) -> str:
+    """文件名疑似不符合匹配规范时的修改提示（命名应含标题与季集信息）。
+    规则与 Stream 侧 matcher 一致：解析不出标题、或剧集任务解析不出集数
+    （含裸集数文件名）即视为不规范——这类文件下次转存/播放需靠任务短路
+    定位，分享重发或换源后可能匹配失败。"""
+    p = parse(name)
+    if not p.title:
+        return "未识别出标题，建议改为「影片名 S01E02」等规范命名"
+    if episode is not None and p.episode is None:
+        return "未识别出集数，建议在文件名中补充 SxxEyy 标注"
+    if season is not None and p.season is not None and p.season != season:
+        return f"文件名标注为第 {p.season} 季，与任务目标第 {season} 季不符"
+    return ""
+
+
+def _task_files(task: dict) -> list[dict]:
+    """COMPLETED 任务的落盘文件明细：文件名/大小/规格/命名规范提示。"""
+    try:
+        result = json.loads(task.get("result_json") or "{}")
+    except ValueError:
+        result = {}
+    raw: list[dict] = []
+    if result.get("name"):  # 单文件定位（targeted / 防重命中）
+        raw = [{"name": result["name"], "size": result.get("size") or 0}]
+    elif result.get("files"):  # 整包/多选落盘清单
+        raw = list(result["files"])
+    elif result.get("names"):  # 老任务仅有路径列表（无 size）
+        raw = [{"name": n, "size": 0} for n in result["names"]]
+    for f in raw:
+        f["size_h"] = _human_size(f.get("size") or 0)
+        f["spec"] = _spec_badges(f["name"])
+        f["warn"] = _name_warn(f["name"], task.get("season"),
+                               task.get("episode"))
+        f["name_ok"] = not f["warn"]
+    return raw
+
+
+def _human_size(n: float) -> str:
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if n < 1024 or unit == "TB":
+            return f"{n:.1f} {unit}" if unit != "B" else f"{int(n)} B"
+        n /= 1024
+    return f"{n:.1f} TB"
+
+
 @router.get("/api/task/{task_id}")
 async def task_api(request: Request, task_id: str):
     user, err = require_user(request)
@@ -272,4 +332,6 @@ async def task_api(request: Request, task_id: str):
         return JSONResponse({"detail": "任务不存在"}, status_code=404)
     task["status_text"] = _STATUS_TEXT.get(task["status"], task["status"])
     task["save_dir"] = settings.get("TRANSFER_DIR")  # 落盘目录名（任务页展示用）
+    if task["status"] == "COMPLETED":
+        task["files"] = _task_files(task)  # 落盘文件明细（含规格与命名提示）
     return task

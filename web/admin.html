@@ -18,18 +18,17 @@
   <!-- 用户管理 -->
   <div class="card">
     <h1>用户管理</h1>
-    <p class="meta">升级/降级、禁用/启用、重置密码与删除；不能对自己降权、禁用或删除。</p>
+    <p class="meta">升级/降级、禁用/启用、重置密码与删除；不能对自己降权、禁用或删除。
+      点击「详情」查看完整信息与操作。</p>
+    <input id="u-search" type="search" placeholder="搜索用户邮箱…"
+           style="margin:10px 0 12px">
     <div class="tablewrap">
       <table>
         <thead>
-          <tr>
-            <th>邮箱</th><th>角色</th><th>级别</th><th>网盘</th>
-            <th>今日搜索</th><th>今日转存</th><th>任务</th>
-            <th>注册时间</th><th>操作</th>
-          </tr>
+          <tr><th>邮箱</th><th>角色</th><th>级别</th><th>操作</th></tr>
         </thead>
         <tbody id="user-rows">
-          <tr><td colspan="9" class="meta">加载中…</td></tr>
+          <tr><td colspan="4" class="meta">加载中…</td></tr>
         </tbody>
       </table>
     </div>
@@ -45,15 +44,25 @@
     </form>
   </div>
 
+  <!-- 用户详情弹窗（表格行「详情」与搜索结果共用） -->
+  <div id="u-modal">
+    <div class="mbox">
+      <button type="button" class="sec mclose" id="u-modal-close">关闭</button>
+      <h2 id="um-email"></h2>
+      <dl class="kv" id="um-kv"></dl>
+      <div id="um-ops" style="margin-top:16px"></div>
+    </div>
+  </div>
+
   <!-- 运行时配置 -->
   <div class="card">
     <h1>运行时配置</h1>
-    <p class="meta">保存后立即生效（含 TMDB API Key，普通用户不可见）。</p>
+    <p class="meta">保存后立即生效（含 TMDB API Key，普通用户不可见；Add-on 标识/描述/图标在此维护）。</p>
     <div id="config-rows">加载中…</div>
     <button type="button" id="cfg-save">保存配置</button>
   </div>
 
-  <p id="msg" class="msg"></p>
+  <p id="msg" class="msg" hidden></p>
 </main>
 <script src="/static/js/common.js"></script>
 <script src="/static/js/admin.js"></script>

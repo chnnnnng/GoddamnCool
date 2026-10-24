@@ -1,11 +1,25 @@
 /* 登录 / 控制面板 / 管理后台三页共用样式（配合 common.css 主题变量）。 */
 
+/* hidden 属性最高优先（badge/button 等 author display 会覆盖 UA 的 [hidden]） */
+[hidden] { display: none !important; }
+
 /* 内容宽度与搜索页统一（common.css 默认卡片限宽 720px 是任务页场景）：
    控制面板/管理页卡片铺满 1100px 主栏，登录页单独收窄。 */
 main { max-width: 1100px; }
 main > .card { max-width: none; margin: 18px 0 24px; }
 main.narrow { max-width: 480px; }
 main.narrow > .card { margin: 24px 0; }
+
+/* 用户详情弹窗（admin 页"显示更多"）：遮罩 + 居中卡片，Escape/遮罩关闭 */
+#u-modal { position: fixed; inset: 0; z-index: 2000; background: rgba(0,0,0,.6);
+           display: none; align-items: flex-start; justify-content: center;
+           padding: 8vh 16px 16px; }
+#u-modal.show { display: flex; }
+#u-modal .mbox { background: var(--card); border: 1px solid var(--line);
+                 border-radius: var(--radius); width: min(640px, 94vw);
+                 max-height: 84vh; overflow-y: auto; padding: 20px 24px; }
+#u-modal h2 { font-size: 1.05rem; margin: 0 0 12px; word-break: break-all; }
+#u-modal .mclose { float: right; margin: -4px -6px 0 0; }
 
 /* Tab 切换（登录页） */
 .tabs { display: flex; gap: 8px; margin-bottom: 6px; }

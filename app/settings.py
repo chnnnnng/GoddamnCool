@@ -12,6 +12,9 @@ log = logging.getLogger(__name__)
 # 可编辑配置白名单：键 -> 类型（bool 不允许；数值需 >= 0）
 EDITABLE: dict[str, type] = {
     "APP_NAME": str,                # 产品名（页面标题/品牌/Stremio Add-on 名）
+    "ADDON_ID": str,                # Stremio Add-on 唯一标识
+    "ADDON_DESCRIPTION": str,       # Stremio Add-on 描述
+    "ADDON_ICON": str,              # Stremio Add-on 图标 URL
     "LITE_DAILY_SEARCH_LIMIT": int, # Lite 用户每日搜索次数上限
     "LITE_DAILY_TRANSFER_LIMIT": int,  # Lite 用户每日转存次数上限
     "SEARCH_LIMIT": int,            # 单次搜索返回候选数上限
@@ -24,11 +27,15 @@ EDITABLE: dict[str, type] = {
 }
 
 # 允许留空的字符串配置（留空含义见 META）
-_ALLOW_EMPTY = {"TRANSFER_DIR", "PANSOU_BASE_URL", "TMDB_API_KEY"}
+_ALLOW_EMPTY = {"TRANSFER_DIR", "PANSOU_BASE_URL", "TMDB_API_KEY",
+                "ADDON_DESCRIPTION", "ADDON_ICON"}
 
 # 管理页展示用中文说明
 SETTINGS_META: dict[str, str] = {
     "APP_NAME": "产品名称（页面标题 / 顶栏品牌 / Stremio Add-on 名）",
+    "ADDON_ID": "Stremio Add-on 唯一标识（修改后 Stremio 会视为全新 Add-on，需重新安装）",
+    "ADDON_DESCRIPTION": "Stremio Add-on 描述（留空用默认文案）",
+    "ADDON_ICON": "Stremio Add-on 图标 URL（留空不显示图标）",
     "LITE_DAILY_SEARCH_LIMIT": "Lite 用户每日搜索次数上限（Pro 不限）",
     "LITE_DAILY_TRANSFER_LIMIT": "Lite 用户每日转存次数上限（Pro 不限）",
     "SEARCH_LIMIT": "单次搜索返回的候选数量上限",

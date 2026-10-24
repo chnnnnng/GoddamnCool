@@ -806,3 +806,51 @@ def test_manifest_name_is_app_name(tmp_db, monkeypatch):
     assert r.status_code == 200
     assert r.json()["name"] == config.APP_NAME
 
+
+# ---------- 运行时配置与任务文件明细（阶段 9） ----------
+
+def test_task_api_files_detail(tmp_db, monkeypatch):
+    """COMPLETED 任务返回落盘文件明细（名称/大小/规格/命名规范提示）。"""
+    patch_fetch_meta(monkeypatch)
+    task_id = _confirm().json()["task_id"]
+    result = {"mode": "episode",
+              "name": "Yu.Zui.S01E12.2016.1080p.WEB-DL.x264.AAC.mp4",
+              "size": 1536000, "fid": "fid123", "located": "save_as"}
+    db.set_task_fields(tmp_db, task_id, result_json=json.dumps(result))
+    db.update_task_status(tmp_db, task_id, "COMPLETED")
+    files = client.get(f"/api/task/{task_id}", headers=AUTH).json()["files"]
+    assert len(files) == 1
+    f = files[0]
+    assert f["size_h"] == "1.5 MB"
+    assert any("1080" in s for s in f["spec"])
+    assert f["name_ok"] is True and f["warn"] == ""
+
+
+def test_task_api_files_name_warn(tmp_db, monkeypatch):
+    """文件名缺集数标注（matcher 无法按季集定位）时返回 warning。"""
+    patch_fetch_meta(monkeypatch)
+    task_id = _confirm().json()["task_id"]
+    result = {"mode": "picks", "names": ["随便一个没有集数的名字.mp4"]}
+    db.set_task_fields(tmp_db, task_id,
+                       result_json=json.dumps(result, ensure_ascii=False))
+    db.update_task_status(tmp_db, task_id, "COMPLETED")
+    files = client.get(f"/api/task/{task_id}", headers=AUTH).json()["files"]
+    assert files[0]["name_ok"] is False and "集数" in files[0]["warn"]
+
+
+def test_manifest_addon_settings_override(tmp_db, monkeypatch):
+    """ADDON_ID / ADDON_DESCRIPTION / ADDON_ICON 运行时配置生效于 manifest。"""
+    import app.settings as settings
+    settings.set(tmp_db, {"ADDON_ID": "custom.quark.addon",
+                          "ADDON_DESCRIPTION": "自定义描述",
+                          "ADDON_ICON": "https://img.example/logo.png"})
+    monkeypatch.setattr(config, "DB_PATH", tmp_db)
+    from app.auth import hash_password, new_stream_token
+    tok = new_stream_token()
+    db.create_user(tmp_db, "m2@test.io", hash_password("password123"),
+                   "user", "pro", tok)
+    m = client.get(f"/s/{tok}/manifest.json").json()
+    assert m["id"] == "custom.quark.addon"
+    assert m["description"] == "自定义描述"
+    assert m["logo"] == "https://img.example/logo.png"
+

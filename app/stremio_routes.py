@@ -8,7 +8,7 @@ from urllib.parse import quote
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 
-from . import config, db
+from . import config, db, settings
 from .stream_service import StreamService
 
 router = APIRouter()
@@ -16,17 +16,22 @@ service = StreamService()
 
 
 def _manifest() -> dict:
-    return {
-        "id": config.ADDON_ID,
+    # id/描述/图标均可由管理员在线配置（ADDON_ID 变更后 Stremio 视为新 Add-on）
+    m = {
+        "id": settings.get("ADDON_ID") or config.ADDON_ID,
         "version": config.ADDON_VERSION,
-        "name": config.APP_NAME,  # Add-on 显示名与页面标题统一（管理员可在线改）
-        "description": config.ADDON_DESCRIPTION,
+        "name": settings.get("APP_NAME"),
+        "description": settings.get("ADDON_DESCRIPTION") or config.ADDON_DESCRIPTION,
         "contactEmail": config.ADDON_CONTACT_EMAIL,
         "resources": ["stream"],
         "types": ["movie", "series"],
         "catalogs": [],
         "idPrefixes": ["tt"],
     }
+    icon = settings.get("ADDON_ICON")
+    if icon:
+        m["logo"] = icon
+    return m
 
 
 def _stream_response(streams: list[dict], status: str) -> JSONResponse:

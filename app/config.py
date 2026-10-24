@@ -36,6 +36,8 @@ APP_NAME: str = os.environ.get("APP_NAME", "GoddamnCool!")
 ADDON_NAME = APP_NAME
 ADDON_DESCRIPTION = "在 Stremio 中播放您个人夸克网盘内的影视资源（仅限自有内容）"
 ADDON_CONTACT_EMAIL = ""
+# Stremio Add-on 图标 URL（.env 可设默认；管理员可在 /admin 在线修改）
+ADDON_ICON: str = os.environ.get("ADDON_ICON", "")
 
 def _read_root_file(name: str) -> str:
     """读取项目根目录下的文本文件（去空白）；不存在返回空串。"""
