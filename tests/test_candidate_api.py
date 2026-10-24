@@ -1,5 +1,6 @@
 """候选资源网页 API 与转存任务创建测试（阶段 3）。"""
 import os
+import re
 
 os.environ.setdefault("SECRET_KEY", "test-secret-key-0123456789abcdef0123456789")
 os.environ.setdefault("ADMIN_TOKEN", "test-admin-token")
@@ -526,17 +527,72 @@ async def test_inspect_share_no_cookie_raises(tmp_db, monkeypatch):
         assert "授权" in str(e)
 
 
-# ---------- 页面骨架 ----------
+# ---------- 页面骨架（前后端分离：页面为 web/ 静态文件，后端提供静态服务） ----------
+
+PAGES = ("/setup", "/candidates", "/task/some-id")
+
 
 def test_pages_render():
-    for path in ("/candidates", "/task/some-id"):
+    for path in PAGES:
         r = client.get(path)
         assert r.status_code == 200 and "text/html" in r.headers["content-type"]
+        assert r.headers["cache-control"] == "no-store"  # 管理页禁止缓存
+        assert r.text.rstrip().endswith("</html>")
 
 
 def test_pages_script_tags_balanced():
-    """回归：</script> 闭合标签丢失会让整个脚本不执行，页面永远停在加载中。"""
-    for path in ("/candidates", "/task/some-id"):
-        html = client.get(path).text
-        assert html.count("<script>") == html.count("</script>") == 1
-        assert html.rstrip().endswith("</html>")
+    """回归：</script> 闭合标签丢失会让脚本不执行，页面永远停在加载中。"""
+    for path in PAGES:
+        page = client.get(path).text
+        assert page.count("<script") == page.count("</script>") >= 1
+
+
+def test_pages_reference_existing_static_assets():
+    """页面引用的每个 /static/* 资源都必须真实存在且可服务（no-store）。"""
+    for path in PAGES:
+        page = client.get(path).text
+        refs = re.findall(r'(?:src|href)="(/static/[^"]+)"', page)
+        assert refs, f"{path} 未引用任何静态资源"
+        for ref in refs:
+            r = client.get(ref)
+            assert r.status_code == 200, f"{path} 引用的 {ref} 不可访问"
+            assert r.headers["cache-control"] == "no-store"
+
+
+def test_static_js_contains_no_python_artifacts():
+    """回归：JS 独立成文件后不应残留 Python f-string 花括号等占位符。"""
+    js = client.get("/static/js/common.js").text
+    assert "TOKEN_KEY" in js and "function api" in js
+    for page_path in PAGES:
+        page = client.get(page_path).text
+        assert "{title}" not in page  # 服务端模板占位符不应出现在静态页
+
+
+def test_setup_submit_rejects_bad_input(tmp_db, monkeypatch):
+    """POST /setup 返回 JSON 契约（{ok, message}）：令牌错误 403、Cookie 不完整 400。"""
+    r = client.post("/setup", data={"token": "wrong", "cookie": "a=1; __puus=x"})
+    assert r.status_code == 403 and r.json()["ok"] is False and "令牌" in r.json()["message"]
+    r = client.post("/setup", data={"token": "test-admin-token", "cookie": "kps=1"})
+    assert r.status_code == 400 and "__puus" in r.json()["message"]
+
+
+def test_setup_submit_ok_saves_cookie(tmp_db, monkeypatch):
+    from app import web_routes as wr
+
+    class FakeProvider:
+        def __init__(self, cookie=None, db_path=None):
+            self.cookie = cookie
+
+        async def verify(self):
+            return None
+
+        async def close(self):
+            return None
+
+    monkeypatch.setattr(wr, "QuarkDriveProvider", FakeProvider)
+    monkeypatch.setattr(wr.config, "DB_PATH", tmp_db)
+    r = client.post("/setup", data={"token": "test-admin-token",
+                                    "cookie": '  "kps=1; __puus=x"  '})
+    assert r.status_code == 200 and r.json()["ok"] is True
+    assert db.load_cookie(tmp_db) == "kps=1; __puus=x"  # 引号与空白已剥离
+

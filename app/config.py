@@ -29,6 +29,8 @@ MATCH_THRESHOLD: float = float(os.environ.get("MATCH_THRESHOLD", "0.6"))
 PROXY_STREAM: bool = os.environ.get("PROXY_STREAM", "1") == "1"
 # 对外可访问的基础地址（生成 /proxy 链接用），如 http://47.117.135.164
 BASE_URL: str = os.environ.get("BASE_URL", "").rstrip("/")
+# 前端静态资源目录（前后端分离：HTML/CSS/JS 为独立文件，后端仅提供 JSON API 与静态服务）
+WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 
 ADDON_ID = "community.quark.stremio"
 ADDON_VERSION = "0.2.0"

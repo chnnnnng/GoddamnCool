@@ -3,6 +3,7 @@ import logging
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from . import config, db
 from .candidate_routes import router as candidate_router
@@ -22,10 +23,24 @@ app.add_middleware(
     CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"],
     expose_headers=["X-Addon-Status"],
 )
+
+
+class NoStoreStaticFiles(StaticFiles):
+    """静态资源禁止缓存：管理页前端演进快，防浏览器用旧 JS 调新 API。"""
+
+    def file_response(self, *args, **kwargs):
+        resp = super().file_response(*args, **kwargs)
+        resp.headers["Cache-Control"] = "no-store"
+        return resp
+
+
 app.include_router(stremio_router)
 app.include_router(web_router)
 app.include_router(candidate_router)
 app.include_router(proxy_router)
+# 前端静态资源（前后端分离）：HTML 页面由路由以 FileResponse 提供（no-store），
+# CSS/JS 经 /static 挂载提供。
+app.mount("/static", NoStoreStaticFiles(directory=config.WEB_DIR), name="static")
 
 worker = TransferWorker()
 

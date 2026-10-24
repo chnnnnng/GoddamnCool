@@ -74,8 +74,8 @@ stremio://<host>:<port>/manifest.json
 ## 架构
 
 ```
-app/
-├── main.py            # FastAPI 组装与启动
+app/                  # 后端：纯 JSON API + 静态资源服务（前后端分离）
+├── main.py            # FastAPI 组装与启动（/static 挂载前端静态资源，no-store）
 ├── config.py          # .env 配置加载
 ├── db.py              # SQLite：凭证（Fernet 加密）+ 转存任务表
 ├── tmdb.py            # IMDb ID → TMDB 双语标题/年份/季集（缓存 + CheckTMDB IP 直连）
@@ -83,13 +83,21 @@ app/
 ├── stream_service.py  # Stream 业务编排（未命中时生成 externalUrl 引导流）
 ├── transfer_worker.py # 转存 Worker（后台执行转存任务：状态机推进/失败恢复/重启恢复）
 ├── candidate_service.py # 多来源候选搜索编排（去重/评分）
-├── candidate_routes.py  # /candidates 候选页、/task/{id} 任务页、/api/* 鉴权接口
+├── candidate_routes.py  # /candidates /task/{id} 页面路由 + /api/* 鉴权接口
 ├── stremio_routes.py  # /manifest.json /stream/...
-├── web_routes.py      # /setup /health
+├── web_routes.py      # /setup 页面路由、POST /setup（JSON）、/health
 └── providers/
     ├── base.py        # CloudDriveProvider 抽象
     ├── quark.py       # 夸克私有接口封装（唯一标注"可能随官方变更"的文件）
     └── search/        # ResourceSearchProvider 抽象 + PanSou 实现（可插拔扩展）
+web/                  # 前端：原生 HTML/CSS/JS 静态文件（无构建步骤）
+├── setup.html         # 授权绑定页（fetch 提交，结果行内展示）
+├── candidates.html    # 候选资源搜索页
+├── task.html          # 转存任务状态页
+├── css/               # common.css 共用样式 + candidates.css 候选页专属
+└── js/
+    ├── common.js      # 共用：令牌管理 / api() 封装 / DOM 工具（textContent 防 XSS）
+    ├── setup.js / candidates.js / task.js  # 各页面交互逻辑
 ```
 
 技术方案与调研依据见 [docs/phase1-research.md](docs/phase1-research.md)。
