@@ -136,6 +136,11 @@
   font-size: .88rem;
   margin: 6px 0;
 }
+.dspec {
+  color: var(--dim);
+  font-size: .8rem;
+  margin: 2px 0 8px;
+}
 .seas {
   display: flex;
   flex-wrap: wrap;

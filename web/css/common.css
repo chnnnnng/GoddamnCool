@@ -45,6 +45,9 @@ code { background: var(--card2); padding: 2px 6px; border-radius: 2px; font-size
 .topbar .spacer { flex: 1; }
 .topbar .meta { margin: 0; }
 
+/* 主内容容器：限制宽度并居中，避免大屏铺满无留白 */
+main { max-width: 1100px; margin: 0 auto; padding: 6px 16px 24px; }
+
 .card { background: var(--card); border: 1px solid var(--line);
         border-radius: var(--radius); padding: 20px 24px; }
 main > .card, body > .card { max-width: 720px; margin: 18px auto 24px; }
