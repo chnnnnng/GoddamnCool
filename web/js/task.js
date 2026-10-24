@@ -51,7 +51,9 @@ function fileTable(files) {
     tdName.textContent = f.name;
     if (f.warn) {  // 疑似不符合命名规范（与 matcher 规则一致）：黄色提示
       tdName.appendChild(document.createTextNode(' '));
-      tdName.appendChild(badge('⚠ ' + f.warn, 'warn'));
+      const b = badge('⚠ 文件名不规范', 'warn');
+      b.title = f.warn;  // 悬停查看完整建议
+      tdName.appendChild(b);
     }
     const tdSize = document.createElement('td');
     tdSize.textContent = f.size > 0 ? (f.size_h || humanSize(f.size)) : '—';

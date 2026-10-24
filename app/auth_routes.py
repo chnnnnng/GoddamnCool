@@ -89,18 +89,20 @@ async def logout(request: Request):
 
 
 def _quota_payload(user: dict) -> dict:
-    """两级配额回显（搜索/转存）：Pro 与管理员不限。"""
+    """两级配额回显（搜索/转存）：今日用量 + 限额/不限 + 历史累计。"""
     unlimited = user["role"] == "admin" or user["tier"] == "pro"
     return {
         "search": {
             "used": db.get_search_count(config.DB_PATH, user["id"]),
             "limit": settings.get("LITE_DAILY_SEARCH_LIMIT"),
             "unlimited": unlimited,
+            "total": db.get_search_total(config.DB_PATH, user["id"]),
         },
         "transfer": {
             "used": db.get_transfer_count(config.DB_PATH, user["id"]),
             "limit": settings.get("LITE_DAILY_TRANSFER_LIMIT"),
             "unlimited": unlimited,
+            "total": db.get_transfer_total(config.DB_PATH, user["id"]),
         },
     }
 

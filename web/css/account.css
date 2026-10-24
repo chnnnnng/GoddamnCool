@@ -28,14 +28,6 @@ main.narrow > .card { margin: 24px 0; }
 .tabs .tab.active { background: var(--accent-strong); color: var(--accent-ink);
                     border-color: var(--accent-strong); font-weight: 600; }
 
-/* 状态/角色徽章 */
-.badge { display: inline-block; padding: 3px 10px; border-radius: 2px;
-         font-size: .8rem; font-weight: 600; margin-left: 6px;
-         background: var(--dim-bg); color: var(--dim-fg); vertical-align: 2px; }
-.badge.ok { background: var(--ok-bg); color: var(--ok-fg); }
-.badge.warn { background: var(--warn-bg); color: var(--warn-fg); }
-.badge.err { background: var(--err-bg); color: var(--err-fg); }
-
 /* 键值行（面板只读信息） */
 .kv { display: grid; grid-template-columns: 88px 1fr; row-gap: 6px;
       font-size: .9rem; margin: 10px 0; }

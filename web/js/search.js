@@ -375,6 +375,11 @@ function renderDetail(c, d) {
     row.appendChild(el('div', 'fmeta',
       `${f.size_h}${sp ? ' · ' + sp : ''}${row._ep ? ' · ' + row._ep : ''}`));
     if (row._ep) row.appendChild(el('span', 'ep', row._ep));
+    if (f.warn) {  // 文件名疑似不符合规范（无标题等），与任务页同一规则
+      const w = el('span', 'badge warn', '⚠ 文件名不规范');
+      w.title = f.warn;
+      row.appendChild(w);
+    }
     const toggle = () => {
       if (pickedFids.has(f.fid)) pickedFids.delete(f.fid);
       else pickedFids.add(f.fid);

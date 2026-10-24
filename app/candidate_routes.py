@@ -226,10 +226,14 @@ async def candidates_inspect(request: Request):
         return JSONResponse({"detail": "请先在控制面板绑定网盘 Cookie"},
                             status_code=400)
     try:
-        return await candidate_service.inspect_share(
+        data = await candidate_service.inspect_share(
             url, (body.get("passcode") or "")[:32], cookie=cookie)
     except Exception as e:
         return JSONResponse({"detail": f"分享解析失败: {e}"}, status_code=400)
+    # 文件名不规范标志（与任务页同一规则，inspect 无季集目标，仅查无标题）
+    for f in data.get("files", []):
+        f["warn"] = _name_warn(f.get("name") or "", None, None)
+    return data
 
 
 @router.post("/api/candidates/verify")
@@ -285,6 +289,15 @@ _TITLELESS_TOKEN = re.compile(
     r"第\s*\d{1,3}\s*[集话期]|第\s*[0-9一二三四五六七八九十百]+\s*季)$")
 
 
+def _is_meta_token(t: str) -> bool:
+    """token 是否为季集/集数标注（无标题判定时剥除）。
+    4 位纯数字仅在年份区间（1900-2099）外视为集数（如长篇 1001 集），
+    区间内保留为可能的片名（如《2012》《1917》）。"""
+    if _TITLELESS_TOKEN.match(t):
+        return True
+    return t.isdigit() and len(t) == 4 and not (1900 <= int(t) <= 2099)
+
+
 def _name_warn(name: str, season: int | None, episode: int | None) -> str:
     """文件名疑似不符合匹配规范时的修改提示（命名应含标题与季集信息）。
     规则与 Stream 侧 matcher 一致：仅视频文件参与检查；剥除季集/集数标注后
@@ -294,7 +307,7 @@ def _name_warn(name: str, season: int | None, episode: int | None) -> str:
     p = parse(name)
     stem = re.sub(r"^\[.*?\]", "", os.path.splitext(name)[0])
     if not [t for t in re.split(r"[\s._\-\[\]()]+", stem)
-            if t and not _TITLELESS_TOKEN.match(t)]:
+            if t and not _is_meta_token(t)]:
         return "未识别出标题，建议改为「影片名 S01E02」等规范命名"
     if episode is not None and p.episode is None:
         return "未识别出集数，建议在文件名中补充 SxxEyy 标注"

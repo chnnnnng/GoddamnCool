@@ -550,6 +550,30 @@ def test_inspect_provider_error(tmp_db, monkeypatch):
     assert r.status_code == 400 and "分享解析失败" in r.json()["detail"]
 
 
+def test_inspect_files_warn_flag(tmp_db, monkeypatch):
+    """inspect 响应 files 每项带 warn 标志（无标题文件名）。"""
+    monkeypatch.setattr(cr.db, "load_user_cookie", lambda p, uid: "c=1")
+    patch_inspect(monkeypatch, result={
+        "video_count": 4, "other_count": 0, "total_size": 2000,
+        "total_size_h": "2000B", "is_series": False, "seasons": [],
+        "files": [{"name": "SE03.11.mp4", "path": "剧/SE03.11.mp4",
+                   "fid": "f1", "size": 500},
+                  {"name": "Movie.2016.1080p.BluRay.x264.mkv",
+                   "path": "Movie.2016.1080p.BluRay.x264.mkv",
+                   "fid": "f2", "size": 500},
+                  {"name": "1001.mp4", "path": "海贼王/1001.mp4",
+                   "fid": "f3", "size": 500},   # 4 位集数（年份区间外）
+                  {"name": "2012.2009.1080p.BluRay.mkv",
+                   "path": "2012.2009.1080p.BluRay.mkv",
+                   "fid": "f4", "size": 500}]})  # 片名含年份，不误报
+    files = client.post("/api/candidates/inspect", headers=AUTH,
+                        json={"share_url": GOOD_URL}).json()["files"]
+    assert "标题" in files[0]["warn"]
+    assert files[1]["warn"] == ""
+    assert "标题" in files[2]["warn"]
+    assert files[3]["warn"] == ""
+
+
 async def test_inspect_share_parses_files_and_seasons(tmp_db, monkeypatch):
     """inspect_share 实际逻辑：过滤非视频/垃圾文件，解析季集/规格，分季聚合。"""
     from app import candidate_service as cs_mod

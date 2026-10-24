@@ -527,6 +527,15 @@ def get_search_count(db_path: str, user_id: str, day: str | None = None) -> int:
     return row["search_count"] if row else 0
 
 
+def get_search_total(db_path: str, user_id: str) -> int:
+    """该用户历史累计搜索次数（全部日期求和）。"""
+    with _lock, _conn(db_path) as c:
+        row = c.execute(
+            "SELECT COALESCE(SUM(search_count), 0) AS s FROM daily_usage "
+            "WHERE user_id = ?", (user_id,)).fetchone()
+    return row["s"] if row else 0
+
+
 def incr_transfer_count(db_path: str, user_id: str) -> int:
     """当日转存次数 +1（任务真正新建时计，幂等复用不计），返回累计值。"""
     day = time.strftime("%Y-%m-%d")
@@ -549,6 +558,15 @@ def get_transfer_count(db_path: str, user_id: str, day: str | None = None) -> in
             "SELECT transfer_count FROM daily_usage WHERE user_id = ? AND day = ?",
             (user_id, day)).fetchone()
     return row["transfer_count"] if row else 0
+
+
+def get_transfer_total(db_path: str, user_id: str) -> int:
+    """该用户历史累计转存次数（全部日期求和）。"""
+    with _lock, _conn(db_path) as c:
+        row = c.execute(
+            "SELECT COALESCE(SUM(transfer_count), 0) AS s FROM daily_usage "
+            "WHERE user_id = ?", (user_id,)).fetchone()
+    return row["s"] if row else 0
 
 
 # ---- 运行时可编辑配置（管理员面板） ----

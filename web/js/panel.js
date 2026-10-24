@@ -11,8 +11,9 @@
 
   function quotaText(q) {
     if (!q) return '…';
-    // Pro/管理员不限 → "2/∞"；Lite → "2/50"
-    return q.used + ' / ' + (q.unlimited ? '∞' : q.limit);
+    // 「今日 1 / ∞次，总计 10次」；Lite → 今日 1 / 50次
+    return '今日 ' + q.used + ' / ' + (q.unlimited ? '∞' : q.limit)
+      + ' 次，总计 ' + (q.total || 0) + ' 次';
   }
 
   function renderAccount() {

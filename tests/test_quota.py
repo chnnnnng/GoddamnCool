@@ -110,3 +110,18 @@ def test_lite_transfer_quota(tmp_db):
     client.post(f"/api/admin/users/{lite['user']['id']}",
                 headers=H(admin["token"]), json={"tier": "pro"})
     assert confirm(lite["token"], urls[4]).status_code == 200
+
+
+# ---------- 面板配额回显：今日 + 历史累计 ----------
+
+def test_me_quota_includes_total(tmp_db, patched_search):
+    register("admin@test.io")           # 首个用户：admin + pro
+    u = register("u1@test.io")          # lite 用户
+    search(u["token"], "kw1")
+    search(u["token"], "kw2")
+    confirm(u["token"], "https://pan.quark.cn/s/abc123456789")
+    q = client.get("/api/auth/me", headers=H(u["token"])).json()["quota"]
+    assert q["search"]["used"] == 2 and q["search"]["total"] == 2
+    assert q["transfer"]["used"] == 1 and q["transfer"]["total"] == 1
+    assert q["search"]["unlimited"] is False
+
