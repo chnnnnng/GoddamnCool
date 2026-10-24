@@ -71,4 +71,6 @@ async def user_stream(stream_token: str, vtype: str, video_id: str):
         return _stream_response(guide, "未绑定网盘 Cookie，请在控制面板绑定")
     streams, status = await service.get_streams(
         vtype, video_id, cookie=cookie, user_id=user["id"])
+    if streams:  # 命中可用流计一次播放（面板统计展示）
+        db.incr_play_count(config.DB_PATH, user["id"])
     return _stream_response(streams, status)

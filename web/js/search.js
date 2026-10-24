@@ -268,6 +268,14 @@ function appendDetailSummary(card, d) {
 async function openDetail(btn, c) {
   btn.disabled = true;
   btn.textContent = '解析中…';
+  // 先弹窗显示加载中提示（分享解析可能较慢），完成后填充内容
+  modalCand = c;
+  pickedFids = new Set();
+  mtitleEl.textContent = c.title || '(无标题)';
+  mbodyEl.textContent = '';
+  mbodyEl.appendChild(el('div', 'hint', '加载中…'));
+  modalEl.hidden = false;
+  mcloseEl.focus();
   try {
     if (!c.detail) {
       const data = await api('/api/candidates/inspect', {
@@ -277,23 +285,15 @@ async function openDetail(btn, c) {
       });
       c.detail = data;
     }
-    showModal(c);
+    mbodyEl.textContent = '';
+    mbodyEl.appendChild(renderDetail(c, c.detail));
   } catch (e) {
     showMsg('查看内容失败：' + (e.message || e), false);
+    hideModal();
   } finally {
     btn.disabled = false;
     btn.textContent = '查看内容';
   }
-}
-
-function showModal(c) {
-  modalCand = c;
-  pickedFids = new Set();
-  mtitleEl.textContent = c.title || '(无标题)';
-  mbodyEl.textContent = '';
-  mbodyEl.appendChild(renderDetail(c, c.detail));
-  modalEl.hidden = false;
-  mcloseEl.focus();
 }
 
 function hideModal() {

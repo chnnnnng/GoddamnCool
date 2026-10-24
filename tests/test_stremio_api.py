@@ -244,6 +244,22 @@ def test_stream_movie_hit(monkeypatch):
     assert s["behaviorHints"]["filename"].endswith(".mkv")
 
 
+def test_stream_hit_counts_play(monkeypatch):
+    """命中可用流时播放计次 +1；/api/auth/me 回显播放统计。"""
+    from app import db as db_mod
+    files = [CloudFile(fid="f1", name="The.Avengers.2012.1080p.BluRay.x264.mkv",
+                       size=2048, is_dir=False)]
+    svc = patch_service(monkeypatch, FakeProvider(files),
+                        {"imdb_id": "tt0848228", "name": "The Avengers",
+                         "type": "movie", "releaseInfo": "2012"})
+    monkeypatch.setattr(stremio_routes, "service", svc)
+    uid = db_mod.get_user_by_stream_token(svc.db_path, svc.user_token)["id"]
+    client.get(f"/s/{svc.user_token}/stream/movie/tt0848228.json")
+    client.get(f"/s/{svc.user_token}/stream/movie/tt0848228.json")
+    assert db_mod.get_play_count(svc.db_path, uid) == 2
+    assert db_mod.get_play_total(svc.db_path, uid) == 2
+
+
 def test_stream_no_cookie_guides_panel(monkeypatch):
     """未绑定 Cookie：严格不回退，返回 /panel 绑定引导流。"""
     svc = patch_service(monkeypatch, FakeProvider([]),

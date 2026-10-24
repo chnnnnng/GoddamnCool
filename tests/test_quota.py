@@ -124,4 +124,5 @@ def test_me_quota_includes_total(tmp_db, patched_search):
     assert q["search"]["used"] == 2 and q["search"]["total"] == 2
     assert q["transfer"]["used"] == 1 and q["transfer"]["total"] == 1
     assert q["search"]["unlimited"] is False
+    assert q["play"]["used"] == 0 and q["play"]["total"] == 0  # 播放仅统计
 

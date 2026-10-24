@@ -117,14 +117,18 @@ def init(db_path: str, secret_key: str) -> None:
                    day TEXT NOT NULL,                -- 'YYYY-MM-DD'（本地时区）
                    search_count INTEGER NOT NULL DEFAULT 0,
                    transfer_count INTEGER NOT NULL DEFAULT 0,
+                   play_count INTEGER NOT NULL DEFAULT 0,
                    PRIMARY KEY (user_id, day)
                )"""
         )
-        # 迁移：旧库 daily_usage 缺 transfer_count 列时补齐
+        # 迁移：旧库 daily_usage 缺列时补齐
         dcols = {r["name"] for r in c.execute("PRAGMA table_info(daily_usage)")}
         if "transfer_count" not in dcols:
             c.execute("ALTER TABLE daily_usage "
                       "ADD COLUMN transfer_count INTEGER NOT NULL DEFAULT 0")
+        if "play_count" not in dcols:
+            c.execute("ALTER TABLE daily_usage "
+                      "ADD COLUMN play_count INTEGER NOT NULL DEFAULT 0")
         c.execute(
             """CREATE TABLE IF NOT EXISTS settings (
                    key TEXT PRIMARY KEY,             -- 管理员可编辑配置（白名单）
@@ -565,6 +569,38 @@ def get_transfer_total(db_path: str, user_id: str) -> int:
     with _lock, _conn(db_path) as c:
         row = c.execute(
             "SELECT COALESCE(SUM(transfer_count), 0) AS s FROM daily_usage "
+            "WHERE user_id = ?", (user_id,)).fetchone()
+    return row["s"] if row else 0
+
+
+def incr_play_count(db_path: str, user_id: str) -> int:
+    """当日播放次数 +1（Stremio 请求命中可用流时计），返回累计值。"""
+    day = time.strftime("%Y-%m-%d")
+    with _lock, _conn(db_path) as c:
+        row = c.execute(
+            """INSERT INTO daily_usage (user_id, day, play_count) VALUES (?, ?, 1)
+               ON CONFLICT(user_id, day) DO UPDATE SET
+                   play_count = play_count + 1
+               RETURNING play_count""",
+            (user_id, day),
+        ).fetchone()
+    return row["play_count"]
+
+
+def get_play_count(db_path: str, user_id: str, day: str | None = None) -> int:
+    day = day or time.strftime("%Y-%m-%d")
+    with _lock, _conn(db_path) as c:
+        row = c.execute(
+            "SELECT play_count FROM daily_usage WHERE user_id = ? AND day = ?",
+            (user_id, day)).fetchone()
+    return row["play_count"] if row else 0
+
+
+def get_play_total(db_path: str, user_id: str) -> int:
+    """该用户历史累计播放次数（全部日期求和）。"""
+    with _lock, _conn(db_path) as c:
+        row = c.execute(
+            "SELECT COALESCE(SUM(play_count), 0) AS s FROM daily_usage "
             "WHERE user_id = ?", (user_id,)).fetchone()
     return row["s"] if row else 0
 

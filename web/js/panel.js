@@ -11,7 +11,9 @@
 
   function quotaText(q) {
     if (!q) return '…';
-    // 「今日 1 / ∞次，总计 10次」；Lite → 今日 1 / 50次
+    // 播放无限额 → 「今日 N 次，总计 M 次」；其余 → 「今日 1 / ∞ 次，总计 10 次」
+    if (q.limit == null)
+      return '今日 ' + q.used + ' 次，总计 ' + (q.total || 0) + ' 次';
     return '今日 ' + q.used + ' / ' + (q.unlimited ? '∞' : q.limit)
       + ' 次，总计 ' + (q.total || 0) + ' 次';
   }
@@ -30,6 +32,8 @@
       quotaText(meData.quota && meData.quota.search);
     document.getElementById('acc-quota-transfer').textContent =
       quotaText(meData.quota && meData.quota.transfer);
+    document.getElementById('acc-quota-play').textContent =
+      quotaText(meData.quota && meData.quota.play);
   }
 
   function renderCookie() {
@@ -127,13 +131,29 @@
   });
 
   // ---- Stremio 接入 ----
+  // 剪贴板写入：clipboard API 仅在 HTTPS 可用，HTTP 环境回退 execCommand
+  function copyText(text) {
+    if (navigator.clipboard && window.isSecureContext)
+      return navigator.clipboard.writeText(text);
+    var ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.cssText = 'position:fixed;top:0;left:0;opacity:0';
+    document.body.appendChild(ta);
+    ta.select();
+    var ok = false;
+    try { ok = document.execCommand('copy'); } catch (e) { /* 忽略 */ }
+    document.body.removeChild(ta);
+    return ok ? Promise.resolve()
+              : Promise.reject(new Error('浏览器拒绝了剪贴板访问'));
+  }
+
   document.getElementById('addon-copy').addEventListener('click', function () {
     var url = document.getElementById('addon-url').value;
     if (!url) return;
-    navigator.clipboard.writeText(url)
+    copyText(url)
       .then(function () { showMsg('已复制到剪贴板', true); })
       .catch(function () {
-        // 剪贴板权限不可用时的兜底：选中内容让用户手动 Ctrl+C
+        // 复制彻底不可用时的兜底：选中内容让用户手动 Ctrl+C
         var input = document.getElementById('addon-url');
         input.select();
         showMsg('已选中内容，请按 Ctrl+C 复制', true);

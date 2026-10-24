@@ -104,6 +104,11 @@ def _quota_payload(user: dict) -> dict:
             "unlimited": unlimited,
             "total": db.get_transfer_total(config.DB_PATH, user["id"]),
         },
+        # 播放无配额限制，仅统计展示
+        "play": {
+            "used": db.get_play_count(config.DB_PATH, user["id"]),
+            "total": db.get_play_total(config.DB_PATH, user["id"]),
+        },
     }
 
 
