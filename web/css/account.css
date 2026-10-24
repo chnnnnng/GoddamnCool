@@ -15,7 +15,8 @@ main.narrow > .card { margin: 24px 0; }
            display: none; align-items: flex-start; justify-content: center;
            padding: 8vh 16px 16px; }
 #u-modal.show { display: flex; }
-#u-modal .mbox { background: var(--card); border: 1px solid var(--line);
+#u-modal .mbox { background: rgba(17, 26, 20, .92); border: 1px solid var(--line);
+                 backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
                  border-radius: var(--radius); width: min(640px, 94vw);
                  max-height: 84vh; overflow-y: auto; padding: 20px 24px; }
 #u-modal h2 { font-size: 1.05rem; margin: 0 0 12px; word-break: break-all; }

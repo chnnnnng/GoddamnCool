@@ -62,7 +62,9 @@ code { background: var(--card2); padding: 2px 6px; border-radius: 2px; font-size
 /* 主内容容器：限制宽度并居中，避免大屏铺满无留白 */
 main { max-width: 1100px; margin: 0 auto; padding: 6px 16px 24px; }
 
-.card { background: var(--card); border: 1px solid var(--line);
+/* 卡片面板：半透明 + 轻毛玻璃（渐变背景透出；不支持 backdrop-filter 时退化为半透明实色） */
+.card { background: rgba(17, 26, 20, .82); border: 1px solid var(--line);
+        backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
         border-radius: var(--radius); padding: 20px 24px; }
 main > .card, body > .card { max-width: 720px; margin: 18px auto 24px; }
 h1 { font-size: 1.25rem; margin: 0 0 10px; }

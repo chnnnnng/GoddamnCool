@@ -84,7 +84,9 @@
 }
 
 .cand {
-  background: var(--card);
+  background: rgba(17, 26, 20, .82);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
   border: 1px solid var(--line);
   border-left: 3px solid var(--line);
   padding: 14px 16px;
@@ -185,8 +187,10 @@
 }
 .modal[hidden] { display: none; }
 .mbox {
-  background: var(--card);
+  background: rgba(17, 26, 20, .92);
   border: 1px solid var(--line);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
   width: 100%;
   max-width: 860px;
   max-height: 86vh;
