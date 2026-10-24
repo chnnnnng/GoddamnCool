@@ -638,7 +638,15 @@ async def test_inspect_share_no_cookie_raises(tmp_db, monkeypatch):
 
 # ---------- 页面骨架（前后端分离：页面为 web/ 静态文件，后端提供静态服务） ----------
 
-PAGES = ("/search", "/candidates", "/task/some-id", "/login", "/panel", "/admin")
+PAGES = ("/", "/search", "/candidates", "/task/some-id", "/login", "/panel",
+         "/admin")
+
+
+def test_landing_page_shows_intro():
+    """根地址首页：产品介绍 + 登录入口，未做登录态判断（由前端 JS 跳 panel）。"""
+    r = client.get("/")
+    assert r.status_code == 200
+    assert "开始使用" in r.text and "/login" in r.text
 
 
 def test_pages_render():

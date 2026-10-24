@@ -114,16 +114,19 @@ function render(t) {
     + '页面每 5 秒自动刷新，可留在本页等待结果。';
   body.appendChild(note);
 }
-async function tick() {
+async function tick(first) {
+  if (first) showLoading('加载中…');  // 首次加载气泡提示（轮询期间不弹）
   try {
     const t = await api('/api/task/' + taskId);
+    hideLoading();
     render(t);
     return ['PENDING', 'SUBMITTING', 'PROCESSING'].includes(t.status);
   } catch (e) {
+    hideLoading();
     showMsg(e.message, false);
     return false;
   }
 }
 (async () => {
-  if (await tick()) setInterval(tick, 5000);
+  if (await tick(true)) setInterval(tick, 5000);
 })();

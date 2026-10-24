@@ -20,13 +20,22 @@ async function api(url, opts = {}) {
   if (r.status === 401) {
     setToken('');
     if (location.pathname !== '/login') {
-      location.href = '/login';
+      // 带上来源页：登录成功后跳回（nextTarget 校验防开放重定向）
+      location.href = '/login?next='
+        + encodeURIComponent(location.pathname + location.search);
       throw new Error('请先登录');
     }
   }
   const data = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(data.detail || ('HTTP ' + r.status));
   return data;
+}
+
+// 登录/注册成功后的跳转目标：?next= 指定的来源页（仅站内路径），默认 /panel
+function nextTarget() {
+  var next = new URLSearchParams(location.search).get('next') || '';
+  if (next.startsWith('/') && !next.startsWith('//')) return next;
+  return '/panel';
 }
 
 // 当前登录用户信息（GET /api/auth/me 的封装）
@@ -59,5 +68,25 @@ function showMsg(text, ok) {
   t.textContent = text;
   t.className = 'show ' + (ok ? 'ok' : 'err');
   clearTimeout(showMsg._timer);
+  clearTimeout(showLoading._timer);
   showMsg._timer = setTimeout(function () { t.className = ''; }, 3500);
+}
+
+// 加载气泡：与 toast 同位（带旋转 spinner 动画），不自动消失，需 hideLoading()
+function showLoading(text) {
+  var t = document.getElementById('toast');
+  if (!t) {
+    t = document.createElement('div');
+    t.id = 'toast';
+    document.body.appendChild(t);
+  }
+  clearTimeout(showMsg._timer);
+  clearTimeout(showLoading._timer);
+  t.textContent = text || '加载中…';
+  t.className = 'show loading';
+}
+
+function hideLoading() {
+  var t = document.getElementById('toast');
+  if (t) t.className = '';
 }

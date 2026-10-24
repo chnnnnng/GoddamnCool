@@ -1,8 +1,8 @@
-// 登录/注册页：双 Tab 切换；成功后写入会话令牌并跳转搜索页。
+// 登录/注册页：双 Tab 切换；成功后写入会话令牌，跳回来源页（?next=），默认 /panel。
 (function () {
-  // 已登录用户直接进搜索页
+  // 已登录用户直接进目标页
   if (getToken()) {
-    me().then(() => { location.href = '/search'; }).catch(() => {});
+    me().then(() => { location.replace(nextTarget()); }).catch(() => {});
   }
 
   var tabLogin = document.getElementById('tab-login');
@@ -32,7 +32,7 @@
         body: JSON.stringify({ email: email, password: password }) })
       .then(function (data) {
         setToken(data.token);
-        location.href = '/search';
+        location.href = nextTarget();
       })
       .catch(function (e) { showMsg(e.message, false); });
   });
@@ -47,7 +47,7 @@
         body: JSON.stringify({ email: email, password: password, invite: invite }) })
       .then(function (data) {
         setToken(data.token);
-        location.href = '/panel';
+        location.href = nextTarget();
       })
       .catch(function (e) { showMsg(e.message, false); });
   });

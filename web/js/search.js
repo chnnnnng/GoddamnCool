@@ -117,9 +117,8 @@ async function dosearch() {
   if (!kw && !anchored) { kwEl.focus(); return; }  // 锚定模式空关键词由服务端 TMDB 双语名补齐
   btnEl.disabled = true;
   btnEl.textContent = '搜索中…';
-  metaEl.textContent = '搜索中…';
   listEl.textContent = '';
-  showMsg('', null);
+  showLoading('搜索中…');  // 顶部气泡 + spinner 动画
   clearTimeout(verifyTimer);
   try {
     const q = new URLSearchParams({ kw });
@@ -137,6 +136,7 @@ async function dosearch() {
     showMsg('搜索失败：' + (e.message || e), false);
     metaEl.textContent = '';
   } finally {
+    hideLoading();
     btnEl.disabled = false;
     btnEl.textContent = '搜索';
   }
@@ -268,7 +268,7 @@ function appendDetailSummary(card, d) {
 async function openDetail(btn, c) {
   btn.disabled = true;
   btn.textContent = '解析中…';
-  // 先弹窗显示加载中提示（分享解析可能较慢），完成后填充内容
+  // 先弹窗 + 顶部加载气泡（分享解析可能较慢），完成后填充内容
   modalCand = c;
   pickedFids = new Set();
   mtitleEl.textContent = c.title || '(无标题)';
@@ -276,6 +276,7 @@ async function openDetail(btn, c) {
   mbodyEl.appendChild(el('div', 'hint', '加载中…'));
   modalEl.hidden = false;
   mcloseEl.focus();
+  showLoading('解析分享中…');
   try {
     if (!c.detail) {
       const data = await api('/api/candidates/inspect', {
@@ -291,6 +292,7 @@ async function openDetail(btn, c) {
     showMsg('查看内容失败：' + (e.message || e), false);
     hideModal();
   } finally {
+    hideLoading();
     btn.disabled = false;
     btn.textContent = '查看内容';
   }

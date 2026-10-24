@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{APP_NAME}} · 夸克网盘 × Stremio 影视库</title>
+<link rel="stylesheet" href="/static/css/common.css">
+<style>
+  /* 首页独立样式：深色渐变 hero + 功能卡片，无外部图片依赖 */
+  body { margin: 0; font-family: var(--font, system-ui, sans-serif);
+         color: var(--text, #e8ebf0); background: #0f1216; }
+  .hero { min-height: 78vh; display: flex; flex-direction: column;
+          align-items: center; justify-content: center; text-align: center;
+          padding: 48px 20px 32px;
+          background: radial-gradient(ellipse 90% 60% at 50% -10%,
+              rgba(122, 100, 255, .18), transparent 60%),
+            radial-gradient(ellipse 60% 45% at 85% 20%,
+              rgba(38, 170, 225, .12), transparent 65%), #0f1216; }
+  .logo { font-size: 2.6rem; font-weight: 800; letter-spacing: .04em;
+          margin: 0 0 14px;
+          background: linear-gradient(92deg, #9f7cff 0%, #5aa9f7 55%, #4ad0c4 100%);
+          -webkit-background-clip: text; background-clip: text; color: transparent; }
+  .tagline { font-size: 1.12rem; color: #aeb6c2; margin: 0 0 6px; }
+  .sub { font-size: .95rem; color: #79828f; margin: 0 0 34px; }
+  .cta { display: flex; gap: 14px; flex-wrap: wrap; justify-content: center; }
+  .cta a { display: inline-block; padding: 12px 34px; border-radius: 3px;
+           font-size: 1rem; font-weight: 600; text-decoration: none;
+           transition: transform .15s ease, box-shadow .15s ease; }
+  .cta a:hover { transform: translateY(-2px); }
+  .cta .primary { background: linear-gradient(92deg, #7c5cff, #4f8df5);
+                  color: #fff; box-shadow: 0 6px 22px rgba(96, 110, 255, .35); }
+  .cta .ghost { border: 1px solid #3a4149; color: #c6ccd6; }
+  .cta .ghost:hover { border-color: #5b6472; }
+  .features { display: grid; gap: 16px; grid-template-columns:
+              repeat(auto-fit, minmax(230px, 1fr));
+              max-width: 1020px; margin: -28px auto 0; padding: 0 20px 56px; }
+  .card { background: #161a21; border: 1px solid #242a33; border-radius: 6px;
+          padding: 22px 20px; }
+  .card svg { width: 30px; height: 30px; stroke: #8f7bff; fill: none;
+              stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+  .card h3 { font-size: 1.02rem; margin: 12px 0 8px; }
+  .card p { font-size: .88rem; color: #8b93a1; margin: 0; line-height: 1.65; }
+  footer { text-align: center; color: #5d6570; font-size: .82rem;
+           padding: 22px 16px 30px; border-top: 1px solid #1c2129; }
+  footer a { color: #7d8694; }
+  @media (max-width: 560px) { .logo { font-size: 2rem; } }
+</style>
+</head>
+<body>
+  <section class="hero">
+    <h1 class="logo">{{APP_NAME}}</h1>
+    <p class="tagline">把网盘分享变成你的私人影视库</p>
+    <p class="sub">搜索资源 → 一键转存到夸克网盘 → 在 Stremio 中直接观看，无需下载</p>
+    <div class="cta">
+      <a class="primary" href="/login">开始使用</a>
+      <a class="ghost" href="/panel">控制面板</a>
+    </div>
+  </section>
+  <section class="features">
+    <div class="card">
+      <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+      <h3>全网资源搜索</h3>
+      <p>聚合多个网盘分享站的公开资源，中英文关键词、多网盘类型筛选，实时检测分享存活状态。</p>
+    </div>
+    <div class="card">
+      <svg viewBox="0 0 24 24"><path d="M12 3v12"/><path d="M7 10l5 5 5-5"/><path d="M4 21h16"/></svg>
+      <h3>一键转存</h3>
+      <p>选定剧集或整包资源，自动解析文件并防重转存到你的夸克网盘，后台任务实时跟踪进度。</p>
+    </div>
+    <div class="card">
+      <svg viewBox="0 0 24 24"><path d="M7 4l13 8-13 8z"/></svg>
+      <h3>Stremio 无缝播放</h3>
+      <p>每人专属 Add-on 清单，转存完成后剧集自动出现在 Stremio 里，点击即播、自动匹配。</p>
+    </div>
+    <div class="card">
+      <svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.2"/><path d="M3 20c0-3.3 2.7-6 6-6s6 2.7 6 6"/><path d="M16 4a4.5 4.5 0 010 8.5"/><path d="M18.5 14.6A6 6 0 0121 20"/></svg>
+      <h3>多用户与配额</h3>
+      <p>独立网盘绑定、每日配额与用量统计，管理员在线配置运行参数，适合家庭与小团队共享。</p>
+    </div>
+  </section>
+  <footer>
+    本工具仅聚合第三方公开的网盘分享链接，不存储、不转码任何资源文件 ·
+    <a href="/login">登录 / 注册</a>
+  </footer>
+  <script src="/static/js/common.js"></script>
+  <script>
+    // 已登录用户：根地址不再显示首页，直接进控制面板
+    (function () {
+      if (getToken()) {
+        me().then(function () { location.replace('/panel'); }).catch(function () {});
+      }
+    })();
+  </script>
+</body>
+</html>

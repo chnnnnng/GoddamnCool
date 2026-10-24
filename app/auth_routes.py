@@ -130,6 +130,12 @@ async def me(request: Request):
     }
 
 
+@router.get("/")
+async def landing_page():
+    """产品首页：未登录展示介绍，已登录由前端 JS 跳转 /panel。"""
+    return page("landing.html")
+
+
 @router.get("/login")
 async def login_page():
     return page("login.html")
