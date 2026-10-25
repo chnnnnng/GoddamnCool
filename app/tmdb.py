@@ -122,9 +122,16 @@ async def fetch_meta(imdb_id: str, vtype: str, db_path: str | None = None,
     path = db_path or config.DB_PATH
     cached = db.get_tmdb_meta(path, imdb_id, vtype, ttl=config.TMDB_META_TTL)
     if cached:
+        db.record_api_call(path, kind="tmdb", endpoint=f"fetch_meta.{vtype}.cache",
+                           duration_ms=0, success=True,
+                           meta={"imdb_id": imdb_id, "vtype": vtype})
         return VideoMeta(cached)
     key = settings.get("TMDB_API_KEY")
     if not key:
+        db.record_api_call(path, kind="tmdb", endpoint=f"fetch_meta.{vtype}",
+                           duration_ms=0, success=False,
+                           error="TMDB_API_KEY 未配置",
+                           meta={"imdb_id": imdb_id, "vtype": vtype})
         log.error("TMDB_API_KEY 未配置（请管理员在 /admin 配置页填写，或设置环境变量）")
         return None
     t0 = _time.monotonic()
@@ -139,6 +146,11 @@ async def fetch_meta(imdb_id: str, vtype: str, db_path: str | None = None,
             key = "movie_results" if vtype == "movie" else "tv_results"
             entry = (zh.get(key) or [None])[0]
             if not entry:
+                db.record_api_call(path, kind="tmdb", endpoint=f"fetch_meta.{vtype}",
+                                   duration_ms=int((_time.monotonic() - t0) * 1000),
+                                   success=False,
+                                   error="TMDB 未收录",
+                                   meta=meta_rec)
                 log.info("TMDB 未收录 %s (%s)", imdb_id, vtype)
                 return None
             peer = (en.get(key) or [{}])[0]

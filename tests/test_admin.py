@@ -148,19 +148,4 @@ def test_config_get_and_set(admin):
                        json={"LITE_DAILY_SEARCH_LIMIT": "abc"}).status_code == 400
 
 
-# ---------- 名称解析问题名单 ----------
-
-def test_name_issues_endpoint(admin):
-    # 未登录 / 非 admin
-    assert client.get("/api/admin/name-issues").status_code == 401
-    lite = register("lite2@test.io")
-    assert client.get("/api/admin/name-issues",
-                      headers=H(lite["token"])).status_code == 403
-    # 记录 + 去重累计
-    db.record_name_issue(config.DB_PATH, "SE03.11.mp4", "sample")
-    db.record_name_issue(config.DB_PATH, "SE03.11.mp4", "search")
-    r = client.get("/api/admin/name-issues", headers=H(admin["token"]))
-    assert r.status_code == 200
-    issues = r.json()["issues"]
-    assert issues[0]["name"] == "SE03.11.mp4"
-    assert issues[0]["hits"] == 2 and issues[0]["source"] == "search"
+# ---------- 名称解析问题名单（已移除 admin 面板入口，但 db helper 保留供内部调用） ----------

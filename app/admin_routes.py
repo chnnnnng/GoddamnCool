@@ -35,15 +35,6 @@ async def list_users(request: Request):
     return {"users": users}
 
 
-@router.get("/api/admin/name-issues")
-async def list_name_issues(request: Request):
-    """解析问题文件名清单（无法解析出标题的文件名，供跟进名称解析器）。"""
-    _, err = require_admin(request)
-    if err:
-        return err
-    return {"issues": db.list_name_issues(config.DB_PATH)}
-
-
 @router.post("/api/admin/users")
 async def create_user(request: Request):
     _, err = require_admin(request)
@@ -219,8 +210,8 @@ async def clear_cache(request: Request):
         prefix = body.get("prefix") if isinstance(body, dict) else None
     except Exception:
         prefix = None
-    if prefix not in (None, "search", "llm", "tmdb"):
-        return JSONResponse({"detail": "prefix 可选值：search / llm / tmdb / 空（全清）"},
+    if prefix not in (None, "search", "tmdb"):
+        return JSONResponse({"detail": "prefix 可选值：search / tmdb / 空（全清）"},
                             status_code=400)
     removed = db.clear_cache(config.DB_PATH, prefix=prefix)
     return {"removed": removed, "prefix": prefix or "(全部)"}

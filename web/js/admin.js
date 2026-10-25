@@ -189,52 +189,6 @@
       .catch(function (e) { showMsg(e.message, false); });
   });
 
-  // ---- 名称解析问题名单（无法解析出标题的文件名） ----
-
-  var issueRows = document.getElementById('issue-rows');
-  var SOURCE_TEXT = { sample: '采样', search: '搜索', task: '任务' };
-
-  function renderIssues(issues) {
-    issueRows.textContent = '';
-    if (!issues.length) {
-      emptyIssuesRow('暂无记录');
-      return;
-    }
-    issues.forEach(function (it) {
-      var tr = document.createElement('tr');
-      var tdN = document.createElement('td');
-      tdN.className = 'wrap';
-      tdN.textContent = it.name;  // textContent 渲染，防 XSS
-      var tdS = document.createElement('td');
-      tdS.textContent = SOURCE_TEXT[it.source] || it.source || '—';
-      var tdH = document.createElement('td');
-      tdH.textContent = it.hits;
-      var tdT = document.createElement('td');
-      tdT.className = 'meta';
-      tdT.textContent = it.last_seen;
-      tr.append(tdN, tdS, tdH, tdT);
-      issueRows.appendChild(tr);
-    });
-  }
-
-  function emptyIssuesRow(text) {
-    var tr = document.createElement('tr');
-    var td = document.createElement('td');
-    td.colSpan = 4;
-    td.className = 'meta';
-    td.textContent = text;
-    tr.appendChild(td);
-    issueRows.appendChild(tr);
-  }
-
-  function loadIssues() {
-    api('/api/admin/name-issues')
-      .then(function (r) { renderIssues(r.issues || []); })
-      .catch(function (e) { emptyIssuesRow('加载失败：' + e.message); });
-  }
-
-  document.getElementById('issues-reload').addEventListener('click', loadIssues);
-
   // ---- 缓存管理 ----
 
   function renderCacheInfo(data) {
@@ -266,14 +220,11 @@
   }
 
   document.getElementById('cache-clear-all').addEventListener('click', function () {
-    if (!confirm('确定清理**所有**缓存？\n（搜索结果、LLM 精选、TMDB 元数据全部清空）')) return;
+    if (!confirm('确定清理**所有**缓存？\n（搜索结果、AI 精选、TMDB 元数据全部清空）')) return;
     clearCache(null, '全部缓存');
   });
   document.getElementById('cache-clear-search').addEventListener('click', function () {
     clearCache('search', '搜索缓存');
-  });
-  document.getElementById('cache-clear-llm').addEventListener('click', function () {
-    clearCache('llm', 'LLM 缓存');
   });
   document.getElementById('cache-clear-tmdb').addEventListener('click', function () {
     clearCache('tmdb', 'TMDB 缓存');
