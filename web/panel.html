@@ -22,10 +22,21 @@
       <dt>邮箱</dt><dd><span id="acc-email">加载中…</span>
         <span id="acc-role" class="badge" hidden></span>
         <span id="acc-tier" class="badge" hidden></span></dd>
-      <dt>搜索次数</dt><dd id="acc-quota-search">…</dd>
-      <dt>转存次数</dt><dd id="acc-quota-transfer">…</dd>
-      <dt>播放次数</dt><dd id="acc-quota-play">…</dd>
     </dl>
+    <div id="quota-summary" style="display:flex;gap:12px;flex-wrap:wrap;margin-top:12px"></div>
+  </div>
+
+  <!-- Stremio 接入 -->
+  <div class="card">
+    <h1>Stremio 接入</h1>
+    <p class="meta">在 Stremio → Add-ons → Community Plugins → URL 中粘贴以下地址安装，
+      播放与转存均使用你上面绑定的网盘。</p>
+    <div class="row">
+      <input id="addon-url" readonly>
+      <button type="button" id="addon-copy">复制</button>
+      <button type="button" class="sec" id="addon-rotate">重置地址</button>
+    </div>
+    <p class="meta">重置地址会使旧 Add-on 立即失效（分享给他人后想收回时使用）。</p>
   </div>
 
   <!-- 夸克网盘凭证 -->
@@ -56,19 +67,6 @@
       <button type="button" id="sd-save">保存</button>
       <button type="button" class="sec" id="sd-clear">恢复默认</button>
     </div>
-  </div>
-
-  <!-- Stremio 接入 -->
-  <div class="card">
-    <h1>Stremio 接入</h1>
-    <p class="meta">在 Stremio → Add-ons → Community Plugins → URL 中粘贴以下地址安装，
-      播放与转存均使用你上面绑定的网盘。</p>
-    <div class="row">
-      <input id="addon-url" readonly>
-      <button type="button" id="addon-copy">复制</button>
-      <button type="button" class="sec" id="addon-rotate">重置地址</button>
-    </div>
-    <p class="meta">重置地址会使旧 Add-on 立即失效（分享给他人后想收回时使用）。</p>
   </div>
 
   <!-- 修改密码 -->

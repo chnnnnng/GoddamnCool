@@ -9,13 +9,42 @@
     return s;
   }
 
-  function quotaText(q) {
-    if (!q) return '…';
-    // 播放无限额 → 「今日 N 次，总计 M 次」；其余 → 「今日 1 / ∞ 次，总计 10 次」
-    if (q.limit == null)
-      return '今日 ' + q.used + ' 次，总计 ' + (q.total || 0) + ' 次';
-    return '今日 ' + q.used + ' / ' + (q.unlimited ? '∞' : q.limit)
-      + ' 次，总计 ' + (q.total || 0) + ' 次';
+  // 配额小卡片（仿 admin API 统计卡风格）
+  var QUOTA_LABEL = {
+    search:   { label: '搜索', desc: '网盘资源搜索' },
+    transfer: { label: '转存', desc: '保存到我的网盘' },
+    play:     { label: '播放', desc: '在线播放' },
+  };
+
+  function _quotaCard(qk, q) {
+    var label = QUOTA_LABEL[qk] || { label: qk, desc: '' };
+    var card = el('div');
+    card.style.cssText = 'flex:1;min-width:160px;padding:12px 14px;'
+      + 'border:1px solid var(--border,rgba(255,255,255,.1));'
+      + 'border-radius:10px;background:rgba(255,255,255,.03);';
+
+    var h4 = el('div');
+    h4.style.cssText = 'font-size:.78rem;opacity:.6;margin-bottom:4px';
+    h4.textContent = label.label + ' · ' + label.desc;
+    card.appendChild(h4);
+
+    var big = el('div');
+    big.style.cssText = 'font-size:1.6rem;font-weight:600';
+    big.textContent = (q && q.total) || 0;
+    card.appendChild(big);
+
+    var sub = el('div');
+    sub.style.cssText = 'font-size:.78rem;opacity:.7;margin-top:4px';
+    if (!q) {
+      sub.textContent = '加载失败';
+    } else if (q.limit == null) {
+      sub.textContent = '今日 ' + q.used + ' 次';
+    } else {
+      var limitTxt = q.unlimited ? '∞' : q.limit;
+      sub.textContent = '今日 ' + q.used + ' / ' + limitTxt + ' 次';
+    }
+    card.appendChild(sub);
+    return card;
   }
 
   function renderAccount() {
@@ -28,12 +57,13 @@
     tierEl.textContent = meData.tier === 'pro' ? 'Pro' : 'Lite';
     tierEl.className = 'badge' + (meData.tier === 'pro' ? ' ok' : ' warn');
     tierEl.hidden = false;
-    document.getElementById('acc-quota-search').textContent =
-      quotaText(meData.quota && meData.quota.search);
-    document.getElementById('acc-quota-transfer').textContent =
-      quotaText(meData.quota && meData.quota.transfer);
-    document.getElementById('acc-quota-play').textContent =
-      quotaText(meData.quota && meData.quota.play);
+    // 配额小卡片区
+    var box = document.getElementById('quota-summary');
+    box.textContent = '';
+    var q = meData.quota || {};
+    box.appendChild(_quotaCard('search',   q.search));
+    box.appendChild(_quotaCard('transfer', q.transfer));
+    box.appendChild(_quotaCard('play',     q.play));
   }
 
   function renderCookie() {
