@@ -11,10 +11,10 @@
 
 AI 链（AISearchChain.search）在普通链**之后**叠加：
   1. 普通链跑完（候选已排序 + 已解析）
-  2. 从最终 alive 候选里取 LLM_SKIM_TOP_N
-  3. SKIM 概要甄选（keep=true/false + score + reason）
-  4. 从 keep=true 里按 AI 评分降序取 LLM_DEEP_TOP_N
-  5. DEEP PARSE 批量解析（标题+英文名+季集+清晰度+来源+编码+音轨+发布组）
+  2. 从最终 alive 候选里取 LLM_REVIEW_TOP_N
+  3. REVIEW 概要甄选（keep=true/false + score + reason）
+  4. 从 keep=true 里按 AI 评分降序取 LLM_DEEPPARSE_TOP_N
+  5. DEEPPARSE 批量解析（标题+英文名+季集+清晰度+来源+编码+音轨+发布组）
   6. **替换**：AI 元数据 100% 覆盖 detail.files 里的原普通解析字段
      → canonical 用 AI 元数据重新拼（带 canonical_source="ai"）
   7. 返回
@@ -276,7 +276,7 @@ class AISearchChain(BaseSearchChain):
 
     async def _ai_enrich(self, cands: list, *, keyword: str, title: str,
                          season: int | None) -> None:
-        """两阶段 AI：SKIM 概要甄选 → DEEP PARSE 批量解析 → **替换**普通解析结果。"""
+        """两阶段 AI：REVIEW 概要甄选 → DEEPPARSE 批量解析 → **替换**普通解析结果。"""
         if not llm.configured() or not cands:
             return
 
@@ -288,8 +288,8 @@ class AISearchChain(BaseSearchChain):
                            if _is_alive(c) and getattr(c, "detail", None)]
         if not inspected_alive:
             return
-        _SKIM_N = max(3, int(settings.get("LLM_SKIM_TOP_N") or config.LLM_SKIM_TOP_N))
-        alive_top = inspected_alive[:_SKIM_N]  # 已是规格排序后的 TOP N
+        _REVIEW_N = max(3, int(settings.get("LLM_REVIEW_TOP_N") or config.LLM_REVIEW_TOP_N))
+        alive_top = inspected_alive[:_REVIEW_N]  # 已是规格排序后的 TOP N
 
         # 预处理：每个候选的 vf / paths / LCP 压缩
         pre: list[dict] = []
@@ -309,7 +309,7 @@ class AISearchChain(BaseSearchChain):
         # alive_top 在 cands 里的下标
         alive_indices = [cands.index(c) for c in alive_top]
 
-        # ---- 阶段 1: SKIM（概要甄选）----
+        # ---- 阶段 1: REVIEW（概要甄选）----
         summary = []
         for ci in alive_indices:
             p = pre[ci]
@@ -321,7 +321,7 @@ class AISearchChain(BaseSearchChain):
                 "files_sample": p["paths"][:3],
             })
         try:
-            skims = await llm.skim_candidates(
+            skims = await llm.review_candidates_brief(
                 summary, keyword=keyword, title=title, season=season)
         except llm.LLMError as e:
             log.info("[AISearchChain] SKIM 失败: %s", e)
@@ -341,13 +341,13 @@ class AISearchChain(BaseSearchChain):
                 sc = sk["score"] if sk["score"] is not None else 50
                 keep_pairs.append((send_idx, sc))
 
-        _DEEP_N = max(1, int(settings.get("LLM_DEEP_TOP_N") or config.LLM_DEEP_TOP_N))
+        _DEEPPARSE_N = max(1, int(settings.get("LLM_DEEPPARSE_TOP_N") or config.LLM_DEEPPARSE_TOP_N))
         keep_pairs.sort(key=lambda x: -x[1])
-        top_pairs = keep_pairs[:_DEEP_N]
+        top_pairs = keep_pairs[:_DEEPPARSE_N]
         if not top_pairs:
             return
 
-        # ---- 阶段 2: DEEP PARSE（批量）----
+        # ---- 阶段 2: DEEPPARSE（批量）----
         deep_send: list[dict] = []
         deep_meta: list[tuple[int, int]] = []  # (deep_idx, cands 下标)
         for deep_send_i, (send_idx, _sc) in enumerate(top_pairs):
@@ -358,10 +358,10 @@ class AISearchChain(BaseSearchChain):
             })
             deep_meta.append((deep_send_i, ci))
         try:
-            deep_results = await llm.parse_candidates_deep(
+            deep_results = await llm.parse_candidates_deepparse(
                 deep_send, keyword=keyword, title=title, season=season)
         except llm.LLMError as e:
-            log.info("[AISearchChain] DEEP PARSE 失败: %s", e)
+            log.info("[AISearchChain] DEEPPARSE 失败: %s", e)
             return
 
         # ---- 阶段 3: 替换 ----

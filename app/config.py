@@ -81,10 +81,10 @@ MIN_VIDEO_SIZE_H: float = float(os.environ.get("MIN_VIDEO_SIZE_H", "0.5"))
 LLM_API_BASE: str = os.environ.get("LLM_API_BASE", "")
 LLM_API_KEY: str = os.environ.get("LLM_API_KEY", "")
 LLM_MODEL: str = os.environ.get("LLM_MODEL", "")
-# AI 两阶段精选参数：SKIM 阶段最多送几个 alive 候选给 AI（按匹配度降序）；
-# DEEP PARSE 阶段最多解析几个 keep=true 候选（按 AI 评分降序）
-LLM_SKIM_TOP_N: int = int(os.environ.get("LLM_SKIM_TOP_N", "10"))
-LLM_DEEP_TOP_N: int = int(os.environ.get("LLM_DEEP_TOP_N", "3"))
+# AI 两阶段精选参数：REVIEW 阶段最多送几个 alive 候选给 AI（按匹配度降序）；
+# DEEPPARSE 阶段最多解析几个 keep=true 候选（按 AI 评分降序）
+LLM_REVIEW_TOP_N: int = int(os.environ.get("LLM_REVIEW_TOP_N", "10"))
+LLM_DEEPPARSE_TOP_N: int = int(os.environ.get("LLM_DEEPPARSE_TOP_N", "3"))
 
 # 转存 Worker（阶段 4）：目标目录、扫描/轮询节奏、超时与重试上限
 TRANSFER_DIR: str = os.environ.get("TRANSFER_DIR", "GODDAMNCOOL")

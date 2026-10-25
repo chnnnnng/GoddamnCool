@@ -429,10 +429,10 @@ async def candidates_ai_review(request: Request):
         return JSONResponse({"detail": "candidates 不能为空"}, status_code=400)
     # 进入 AI 链前先按 SKIM 配置截断（搜索链已在规格排序后截 SKIM_TOP_N；
     # 这里路由层只做安全上限，真正的 SKIM TOP N 在 llm.review_candidates 内部按配置再截一次）
-    _SKIM_N = max(3, int(settings.get("LLM_SKIM_TOP_N")
-                         or config.LLM_SKIM_TOP_N
+    _REVIEW_N = max(3, int(settings.get("LLM_REVIEW_TOP_N")
+                         or config.LLM_REVIEW_TOP_N
                          or 15))
-    _UPPER = max(_SKIM_N, 50)  # 安全上限，前端最多传这么多
+    _UPPER = max(_REVIEW_N, 10)  # 安全上限，前端最多传这么多
     cands: list[dict] = []
     for it in raw[:_UPPER]:
         if not isinstance(it, dict):

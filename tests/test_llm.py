@@ -26,13 +26,13 @@ _REVIEW_JSON = (
     '"reason":"完全匹配","title":"余罪","year":2016,"season":1},'
     '{"index":1,"keep":false,"score":null,"dup_of":0,"reason":"内容重复"}]}')
 
-# 两阶段 SKIM 返回（只有 index/keep/score/reason/title；keep=false 不进 DEEP）
-_SKIM_JSON = (
+# 两阶段 REVIEW 返回（只有 index/keep/score/reason/title；keep=false 不进 DEEP）
+_REVIEW_JSON = (
     '{"items":[{"index":0,"keep":true,"score":88,'
     '"reason":"剧名高度匹配，存活且有完整集数","title":"余罪"},'
     '{"index":1,"keep":false,"score":null,"reason":"与 index=0 重复资源","title":"余罪"}]}')
 
-# DEEP PARSE 返回（按 index 回 files[].ci 对应的模板元数据；不含 canonical）
+# DEEPPARSE 返回（按 index 回 files[].ci 对应的模板元数据；不含 canonical）
 _DEEP_JSON = (
     '{"items":[{"index":0,"files":[{"ci":0,"title":"余罪","season":1,'
     '"episode":1,"year":2016,"resolution":"2160p","source":"WEB-DL",'
@@ -115,7 +115,7 @@ def test_configured_requires_all_three(tmp_db, monkeypatch):
 # ---------- AI 精选：筛选/评分/去重 ----------
 
 def test_ai_review_ok_and_cached(llm_on, monkeypatch):
-    calls = patch_chat(monkeypatch, replies=[_SKIM_JSON, _DEEP_JSON])
+    calls = patch_chat(monkeypatch, replies=[_REVIEW_JSON, _DEEP_JSON])
     body = {"keyword": "余罪", "title": "余罪", "season": 1,
             "candidates": [
                 {"title": "余罪 全集 4K", "source": "p1",
@@ -129,7 +129,7 @@ def test_ai_review_ok_and_cached(llm_on, monkeypatch):
     assert items[0]["keep"] is True and items[0]["score"] == 88
     assert items[0]["title"] == "余罪"
     assert items[1]["keep"] is False
-    # 两阶段：SKIM + DEEP PARSE（index=0 keep=true 且有 files 才进 DEEP）
+    # 两阶段：REVIEW + DEEPPARSE（index=0 keep=true 且有 files 才进 DEEP）
     assert calls["n"] == 2
     # 相同输入命中两层缓存，不再调用模型
     r2 = client.post("/api/candidates/ai-review", json=body, headers=AUTH)
@@ -138,7 +138,7 @@ def test_ai_review_ok_and_cached(llm_on, monkeypatch):
     # 不同输入 → 重新调用
     body2 = dict(body, keyword="回魂夜")
     client.post("/api/candidates/ai-review", json=body2, headers=AUTH)
-    assert calls["n"] == 4  # SKIM + DEEP 各一次
+    assert calls["n"] == 4  # REVIEW + DEEP 各一次
 
 
 def test_ai_review_input_validation(llm_on, monkeypatch):
@@ -308,13 +308,13 @@ def test_llm_status_endpoint():
 
 @pytest.mark.usefixtures("llm_on")
 def test_ai_review_with_files_parse(monkeypatch):
-    """两阶段：SKIM 概要甄选 + DEEP PARSE 元数据解析，
+    """两阶段：REVIEW 概要甄选 + DEEPPARSE 元数据解析，
     canonical 由后端用 name_parser.canonical 拼。"""
     calls = patch_chat(monkeypatch, replies=[
-        # SKIM 返回：1 个 keep=true 的候选
+        # REVIEW 返回：1 个 keep=true 的候选
         '{"items":[{"index":0,"keep":true,"score":90,'
         '"reason":"剧名匹配，1080p 多集","title":"狂飙"}]}',
-        # DEEP PARSE 返回：files[].ci 对应 paths 数组下标
+        # DEEPPARSE 返回：files[].ci 对应 paths 数组下标
         '{"items":[{"index":0,"files":[{"ci":0,"title":"狂飙",'
         '"season":3,"episode":6,"year":2023,'
         '"resolution":"2160p","source":"WEB-DL",'
@@ -335,9 +335,9 @@ def test_ai_review_with_files_parse(monkeypatch):
     spec = f0["spec"]
     assert spec["resolution"] == "2160p" and spec["source"] == "WEB-DL" \
         and spec["codec"] == "H.265"
-    # SKIM + DEEP 两次
+    # REVIEW + DEEP 两次
     assert calls["n"] == 2
-    # 不同文件 → SKIM + DEEP 重新调用（缓存键随内容变化）
+    # 不同文件 → REVIEW + DEEP 重新调用（缓存键随内容变化）
     client.post("/api/candidates/ai-review", headers=AUTH, json={
         "keyword": "狂飙", "title": "狂飙", "season": 3,
         "candidates": [{"title": "狂飙 第三季", "source": "p1",

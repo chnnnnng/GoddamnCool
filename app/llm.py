@@ -221,7 +221,7 @@ def compact_file_paths_lcp(paths: list[str]) -> tuple[list[str], list[list[int]]
     return compact, mapping
 
 
-# ---- AI 两阶段：SKIM（概要甄选）+ DEEP PARSE（详细元数据） ----
+# ---- AI 两阶段：REVIEW（概要甄选）+ DEEPPARSE（详细元数据） ----
 
 SKIM_SKILL_VERSION = 1
 SKIM_SKILL = """你是网盘影视资源搜索结果的甄别助手。根据目标影片信息与候选资源的概要，决定每个候选是否值得进一步深入解析。
@@ -284,7 +284,7 @@ candidates 是一个 JSON 数组，每个元素含：
 """
 
 
-async def skim_candidates(cands_summary: list[dict], *, keyword: str,
+async def review_candidates_brief(cands_summary: list[dict], *, keyword: str,
                            title: str, season: int | None = None) -> list[dict]:
     """阶段 1：概要甄选。
 
@@ -343,10 +343,10 @@ async def skim_candidates(cands_summary: list[dict], *, keyword: str,
     return out
 
 
-async def parse_candidates_deep(
+async def parse_candidates_deepparse(
     cands_detail: list[dict], *, keyword: str, title: str,
     season: int | None = None) -> list[dict]:
-    """DEEP PARSE：一次性请求解析多个候选的所有 paths 模板。
+    """DEEPPARSE：一次性请求解析多个候选的所有 paths 模板。
 
     cands_detail 每项含 title + paths(LCP 压缩后的路径数组)。
     返回 [{"index": 输入下标, "title": ..., "files": [{"ci","title","season",...}]}]"""
@@ -422,14 +422,14 @@ async def parse_candidates_deep(
 
 async def review_candidates(cands: list[dict], *, keyword: str = "",
                             title: str = "", season: int | None = None) -> list[dict]:
-    """前端 ai-review 端点入口：SKIM 概要甄选 → 选 keep=true 候选（按 AI 评分取 LLM_DEEP_TOP_N） →
-    DEEP PARSE 批量解析 → 返回规整 items（格式同旧版，前端无需改）。"""
+    """前端 ai-review 端点入口：REVIEW 概要甄选 → 选 keep=true 候选（按 AI 评分取 LLM_DEEPPARSE_TOP_N） →
+    DEEPPARSE 批量解析 → 返回规整 items（格式同旧版，前端无需改）。"""
     from . import config as _cfg, settings as _stg
-    _SKIM_N = max(3, int(_stg.get("LLM_SKIM_TOP_N") or _cfg.LLM_SKIM_TOP_N))
-    _DEEP_N = max(1, int(_stg.get("LLM_DEEP_TOP_N") or _cfg.LLM_DEEP_TOP_N))
+    _REVIEW_N = max(3, int(_stg.get("LLM_REVIEW_TOP_N") or _cfg.LLM_REVIEW_TOP_N))
+    _DEEPPARSE_N = max(1, int(_stg.get("LLM_DEEPPARSE_TOP_N") or _cfg.LLM_DEEPPARSE_TOP_N))
 
     # 0. SKIM TOP N 截断（按配置；路由层已做一次，这里再截确保 SKIM 规模可控）
-    cands = cands[:_SKIM_N]
+    cands = cands[:_REVIEW_N]
 
     # 1. SKIM：SKIM_TOP_N 个候选概要
     summary = []
@@ -441,7 +441,7 @@ async def review_candidates(cands: list[dict], *, keyword: str = "",
             "total_size_h": c.get("total_size_h"),
             "files_sample": [f.get("path") or f.get("name") or "" for f in fs[:3]],
         })
-    skims = await skim_candidates(summary, keyword=keyword, title=title, season=season)
+    skims = await review_candidates_brief(summary, keyword=keyword, title=title, season=season)
 
     # 2. 挑 keep=true 且有 files 的候选，按 AI 评分降序取 TOP N
     keep_idx_pairs: list[tuple[int, int]] = []  # (send_idx, ai_score)
@@ -454,9 +454,9 @@ async def review_candidates(cands: list[dict], *, keyword: str = "",
         sc = sk["score"] if sk["score"] is not None else 50
         keep_idx_pairs.append((send_i, sc))
     keep_idx_pairs.sort(key=lambda x: -x[1])
-    keep_idx_pairs = keep_idx_pairs[:_DEEP_N]
+    keep_idx_pairs = keep_idx_pairs[:_DEEPPARSE_N]
 
-    # 3. DEEP PARSE 批量一次请求
+    # 3. DEEPPARSE 批量一次请求
     deep_send: list[dict] = []
     deep_meta: list[tuple[int, int]] = []  # (deep_idx, 原 cands 下标)
     for deep_i, (send_i, _sc) in enumerate(keep_idx_pairs):
@@ -469,7 +469,7 @@ async def review_candidates(cands: list[dict], *, keyword: str = "",
     deep_results: list[dict] = []
     if deep_send:
         try:
-            deep_results = await parse_candidates_deep(
+            deep_results = await parse_candidates_deepparse(
                 deep_send, keyword=keyword, title=title, season=season)
         except LLMError:
             deep_results = []
