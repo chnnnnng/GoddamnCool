@@ -113,45 +113,98 @@ class TMDBMetaProvider(MetaProvider):
         per_season = await asyncio.gather(*(one(s) for s in seasons))
         return [v for eps in per_season for v in eps]
 
+    async def _external_ids(self, client, vtype: str, tmdb_id) -> dict:
+        """TMDB search/find 结果不带 imdb_id，需要补调 external_ids。"""
+        kind_path = "movie" if vtype == "movie" else "tv"
+        try:
+            r = await self._api_get(client, f"/{kind_path}/{tmdb_id}/external_ids")
+            r.raise_for_status()
+            return r.json()
+        except Exception as e:
+            log.warning("补调 external_ids 失败 %s/%s: %s", kind_path, tmdb_id, e)
+            return {}
+
     # ---------- 公共：元数据查询 ----------
 
-    async def fetch_meta(self, imdb_id: str, vtype: str,
+    async def fetch_meta(self, source_id: str, vtype: str,
                          db_path: str | None = None,
+                         source_kind: str = "imdb",
                          transport: httpx.AsyncTransport | None = None) -> VideoMeta | None:
+        """按外部 ID 拉元数据。
+
+        source_kind 决定查询路径：
+          - "imdb":    /find/{imdb_id}?external_source=imdb_id（Stremio 默认传）
+          - "tmdb":    /movie|tv/{tmdb_id} + external_ids 补拿 imdb_id
+          - "keyword": 委托给 fetch_meta_by_keyword
+        """
+        # keyword 直接委托（已经实现好）
+        if source_kind == "keyword":
+            meta, _ = await self.fetch_meta_by_keyword(source_id, vtype, db_path)
+            return meta
+
         t0 = time.monotonic()
         path = db_path or config.DB_PATH
-        cached = db.get_tmdb_meta(path, imdb_id, vtype, ttl=config.TMDB_META_TTL)
+        # 缓存 key 加 source_kind 前缀，避免 imdb_id "tt123" 和 tmdb_id "123" 撞车
+        cache_id = f"{source_kind}:{source_id}"
+        cached = db.get_tmdb_meta(path, cache_id, vtype, ttl=config.TMDB_META_TTL)
         if cached:
             db.record_api_call(path, kind="tmdb", endpoint=f"fetch_meta.{vtype}.cache",
                                duration_ms=0, success=True,
-                               meta={"imdb_id": imdb_id, "vtype": vtype})
-            return VideoMeta(cached)
+                               meta={"source_id": source_id, "source_kind": source_kind,
+                                     "vtype": vtype})
+            return VideoMeta(cached, source_id=source_id, source_kind=source_kind)
+
         key = settings.get("TMDB_API_KEY")
         if not key:
             db.record_api_call(path, kind="tmdb", endpoint=f"fetch_meta.{vtype}",
                                duration_ms=0, success=False,
                                error="TMDB_API_KEY 未配置",
-                               meta={"imdb_id": imdb_id, "vtype": vtype})
+                               meta={"source_id": source_id, "source_kind": source_kind,
+                                     "vtype": vtype})
             log.error("TMDB_API_KEY 未配置（请管理员在 /admin 配置页填写，或设置环境变量）")
             return None
-        meta_rec = {"imdb_id": imdb_id, "vtype": vtype}
+
+        meta_rec = {"source_id": source_id, "source_kind": source_kind, "vtype": vtype}
         try:
             async with httpx.AsyncClient(timeout=10, transport=transport,
                                          params={"api_key": key}) as client:
-                zh, en = await asyncio.gather(
-                    self._find(client, imdb_id, _LANG_ZH),
-                    self._find(client, imdb_id, _LANG_EN),
-                )
-                key_map = "movie_results" if vtype == "movie" else "tv_results"
-                entry = (zh.get(key_map) or [None])[0]
-                if not entry:
-                    db.record_api_call(path, kind="tmdb", endpoint=f"fetch_meta.{vtype}",
-                                       duration_ms=int((time.monotonic() - t0) * 1000),
-                                       success=False, error="TMDB 未收录",
-                                       meta=meta_rec)
-                    log.info("TMDB 未收录 %s (%s)", imdb_id, vtype)
+                if source_kind == "imdb":
+                    zh, en = await asyncio.gather(
+                        self._find(client, source_id, _LANG_ZH),
+                        self._find(client, source_id, _LANG_EN),
+                    )
+                    key_map = "movie_results" if vtype == "movie" else "tv_results"
+                    entry = (zh.get(key_map) or [None])[0]
+                    if not entry:
+                        db.record_api_call(path, kind="tmdb", endpoint=f"fetch_meta.{vtype}",
+                                           duration_ms=int((time.monotonic() - t0) * 1000),
+                                           success=False, error="TMDB 未收录",
+                                           meta=meta_rec)
+                        log.info("TMDB 未收录 %s (%s:%s)", source_id, source_kind, vtype)
+                        return None
+                    peer = (en.get(key_map) or [{}])[0]
+                    # external_ids：/find 不返回 imdb_id，必须补调
+                    tmdb_id = entry["id"]
+                    ext = await self._external_ids(client, vtype, tmdb_id)
+                    imdb_id = ext.get("imdb_id") or ""
+
+                elif source_kind == "tmdb":
+                    kind_path = "movie" if vtype == "movie" else "tv"
+                    zh_resp, en_resp = await asyncio.gather(
+                        client.get(f"/{kind_path}/{source_id}", params={"language": _LANG_ZH}),
+                        client.get(f"/{kind_path}/{source_id}", params={"language": _LANG_EN}),
+                    )
+                    zh_resp.raise_for_status()
+                    en_resp.raise_for_status()
+                    entry = zh_resp.json()
+                    peer = en_resp.json()
+                    tmdb_id = source_id
+                    ext = await self._external_ids(client, vtype, tmdb_id)
+                    imdb_id = ext.get("imdb_id") or ""
+                else:
+                    log.warning("未知 source_kind=%s，按 imdb 处理", source_kind)
                     return None
-                peer = (en.get(key_map) or [{}])[0]
+
                 name_zh = (entry.get("title") or entry.get("name") or "").strip()
                 name_en = (peer.get("title") or peer.get("name") or "").strip()
                 date = entry.get("release_date") or entry.get("first_air_date") or ""
@@ -163,20 +216,20 @@ class TMDBMetaProvider(MetaProvider):
                         "name_zh": name_zh, "name_en": name_en,
                         "releaseInfo": date[:4], "videos": videos,
                         "poster_path": poster_path, "backdrop_path": backdrop_path}
-            db.save_tmdb_meta(path, imdb_id, vtype, data)
+            db.save_tmdb_meta(path, cache_id, vtype, data)
             dur_ms = int((time.monotonic() - t0) * 1000)
             db.record_api_call(path, kind="tmdb", endpoint=f"fetch_meta.{vtype}",
                                duration_ms=dur_ms, success=True,
                                meta={**meta_rec, "response": {
-                                   "name_zh": name_zh, "name_en": name_en,
+                                   "imdb_id": imdb_id, "name_zh": name_zh, "name_en": name_en,
                                    "year": date[:4], "videos": len(videos)}})
-            return VideoMeta(data)
+            return VideoMeta(data, source_id=source_id, source_kind=source_kind)
         except Exception as e:
             dur_ms = int((time.monotonic() - t0) * 1000)
             db.record_api_call(path, kind="tmdb", endpoint=f"fetch_meta.{vtype}",
                                duration_ms=dur_ms, success=False,
                                error=str(e)[:200], meta=meta_rec)
-            log.warning("TMDB 查询失败: %s %s", vtype, imdb_id, exc_info=True)
+            log.warning("TMDB 查询失败: %s:%s %s", source_kind, vtype, source_id, exc_info=True)
             return None
 
     async def fetch_meta_by_keyword(self, keyword: str, vtype: str,

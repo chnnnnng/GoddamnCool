@@ -24,10 +24,12 @@ log = logging.getLogger(__name__)
 tmdb_provider = TMDBMetaProvider()
 
 
-async def fetch_meta(imdb_id: str, vtype: str,
+async def fetch_meta(source_id: str, vtype: str,
                      db_path: str | None = None,
+                     source_kind: str = "imdb",
                      transport=None) -> VideoMeta | None:
-    return await tmdb_provider.fetch_meta(imdb_id, vtype, db_path, transport=transport)
+    return await tmdb_provider.fetch_meta(
+        source_id, vtype, db_path, source_kind=source_kind, transport=transport)
 
 
 async def fetch_meta_by_keyword(keyword: str, vtype: str,

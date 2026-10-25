@@ -1,13 +1,20 @@
-"""Stream 业务编排：IMDb ID → TMDB 元数据 → 网盘搜索 → 匹配 → Stremio Stream。"""
+"""Stream 业务编排：IMDb ID → MetaProvider 元数据 → 网盘搜索 → 匹配 → Stremio Stream。"""
 import json
 import logging
 
 from . import config, db, settings
 from .name_parser import parser as name_parser
-from .tmdb import VideoMeta, fetch_meta
+from .meta import get_meta_provider
+from .meta.base import VideoMeta
 from .matcher import MovieMatcher, episode_of, parse
 from .providers.base import CloudDriveProvider, CloudFile, ProviderAuthError, ProviderError
 from .providers.quark import QuarkDriveProvider
+
+# ---------- 向后兼容：模块级 fetch_meta 包装（测试 monkeypatch 依赖此符号） ----------
+async def fetch_meta(source_id: str, vtype: str, db_path: str | None = None,
+                     source_kind: str = "imdb") -> VideoMeta | None:
+    return await get_meta_provider().fetch_meta(
+        source_id, vtype, db_path, source_kind=source_kind)
 
 log = logging.getLogger(__name__)
 

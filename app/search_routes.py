@@ -31,9 +31,16 @@ from .matcher import _title_keys_similarity
 from .name_parser import canonical_with_context, spec_dict, normalize_resolution
 from .name_parser import parser as name_parser
 from .search.search_chains import BaseSearchChain, AISearchChain  # 需求第 3 条：普通链/AI 链
-from .tmdb import fetch_meta
+from .meta import get_meta_provider
+from .meta.base import VideoMeta
 from .search import SHARE_URL_RE
 from .providers.quark import QuarkDriveProvider
+
+# ---------- 向后兼容：模块级 fetch_meta 包装（测试 monkeypatch 依赖此符号） ----------
+async def fetch_meta(source_id: str, vtype: str, db_path: str | None = None,
+                     source_kind: str = "imdb") -> VideoMeta | None:
+    return await get_meta_provider().fetch_meta(
+        source_id, vtype, db_path, source_kind=source_kind)
 from .search.search_service import SearchService
 from .stream_service import parse_video_id
 from .web_routes import page

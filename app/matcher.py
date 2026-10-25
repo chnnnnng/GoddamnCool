@@ -16,7 +16,7 @@ from difflib import SequenceMatcher
 from pypinyin import lazy_pinyin
 
 from .name_parser import parser as name_parser
-from .tmdb import VideoMeta
+from .meta.base import VideoMeta
 from .providers.base import CloudFile
 
 VIDEO_EXTS = {".mp4", ".mkv", ".avi", ".ts", ".flv", ".webm", ".m2ts", ".mov", ".wmv", ".m4v"}

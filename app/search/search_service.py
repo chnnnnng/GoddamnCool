@@ -16,9 +16,20 @@ from difflib import SequenceMatcher
 
 from .. import config, db, settings
 from ..name_parser import parser as name_parser, spec_dict
-from ..tmdb import VideoMeta, fetch_meta, fetch_meta_by_keyword
+from ..meta import get_meta_provider
+from ..meta.base import VideoMeta
 from ..stream_service import parse_video_id
 from ..matcher import JUNK_PATTERN, VIDEO_EXTS
+
+# ---------- 向后兼容：模块级包装（测试 monkeypatch 依赖此符号） ----------
+async def fetch_meta(source_id: str, vtype: str, db_path: str | None = None,
+                     source_kind: str = "imdb") -> VideoMeta | None:
+    return await get_meta_provider().fetch_meta(
+        source_id, vtype, db_path, source_kind=source_kind)
+
+async def fetch_meta_by_keyword(keyword: str, vtype: str,
+                                db_path: str | None = None) -> tuple[VideoMeta | None, str]:
+    return await get_meta_provider().fetch_meta_by_keyword(keyword, vtype, db_path)
 from ..providers.base import ProviderError
 from ..providers.quark import QuarkDriveProvider
 from . import PanSouProvider, ResourceSearchProvider, SearchCandidate, SearchError

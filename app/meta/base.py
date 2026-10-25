@@ -14,12 +14,27 @@ class VideoMeta:
     title 为主显示名（中文优先），name_zh / name_en 为双语；
     poster_path / backdrop_path 是 TMDB 风格的路径片段（如 /abc.jpg），
     完整 URL 由 poster_url() / backdrop_url() 拼接——非 TMDB provider
-    可以自定义 image_base 覆盖拼接前缀。"""
+    可以自定义 image_base 覆盖拼接前缀。
+
+    标识符字段（解决多数据源 ID 共存问题）：
+      - source_id:    这次查询的原始 ID（可能是 imdb_id / tmdb_id / douban_id
+                      / 关键词字符串）
+      - source_kind:  source_id 属于哪种（"imdb" / "tmdb" / "douban" / "keyword"）
+      - canonical_id: 统一主键（当前就是 IMDb ID；没有 IMDb ID 时退化为 source_id）"""
 
     # 默认图床（TMDB image CDN）；派生类可覆盖
     IMAGE_BASE = "https://image.tmdb.org/t/p"
 
-    def __init__(self, meta: dict, *, image_base: str | None = None):
+    def __init__(self, meta: dict, *, image_base: str | None = None,
+                 source_id: str = "", source_kind: str = ""):
+        # 原始查询标识（派生类填，调用方用）
+        self.source_id: str = source_id or meta.get("source_id", "") or meta.get("imdb_id", "")
+        self.source_kind: str = source_kind or meta.get("source_kind", "") or "imdb"
+        # 统一主键（能查到 IMDb ID 就用它，否则退化为 source_id）
+        self.canonical_id: str = (meta.get("imdb_id")
+                                  or meta.get("id", "")
+                                  or self.source_id)
+
         self.id: str = meta.get("imdb_id", "") or meta.get("id", "")
         self.name_zh: str = meta.get("name_zh", "") or ""
         self.name_en: str = meta.get("name_en", "") or ""
@@ -70,9 +85,18 @@ class MetaProvider(ABC):
     def configured(self) -> bool: ...
 
     @abstractmethod
-    async def fetch_meta(self, imdb_id: str, vtype: str,
-                         db_path: str | None = None) -> VideoMeta | None:
-        """按 IMDb ID 拉元数据。未收录 / 网络失败返回 None。"""
+    async def fetch_meta(self, source_id: str, vtype: str,
+                         db_path: str | None = None,
+                         source_kind: str = "imdb") -> VideoMeta | None:
+        """按外部 ID 拉元数据。未收录 / 网络失败返回 None。
+
+        source_kind:  source_id 的来源类型
+          - "imdb":    IMDb ID（ttXXXXXXX，Stremio 默认传）
+          - "tmdb":    TMDB 内部数字 ID（123456）
+          - "keyword": 关键词（如 "星际穿越"），调用方知道自己传的是名字
+          - 其他 provider 可扩展（如 "douban"、"omdb"）
+
+        派生类必须在构造 VideoMeta 时正确填 source_id / source_kind。"""
 
     @abstractmethod
     async def fetch_meta_by_keyword(self, keyword: str, vtype: str,
