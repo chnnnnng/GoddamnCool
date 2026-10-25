@@ -21,7 +21,7 @@ from .stream_service import parse_video_id
 from .matcher import JUNK_PATTERN, VIDEO_EXTS
 from .providers.base import ProviderError
 from .providers.quark import QuarkDriveProvider
-from .providers.search import PanSouProvider, ResourceSearchProvider, SearchCandidate, SearchError
+from .search import PanSouProvider, ResourceSearchProvider, SearchCandidate, SearchError
 from .transfer_worker import parse_pwd_id
 
 log = logging.getLogger(__name__)

@@ -32,7 +32,7 @@ from .name_parser import canonical_with_context, spec_dict, normalize_resolution
 from .name_parser import parser as name_parser
 from .search_chains import BaseSearchChain, AISearchChain  # 需求第 3 条：普通链/AI 链
 from .tmdb import fetch_meta
-from .providers.search import SHARE_URL_RE
+from .search import SHARE_URL_RE
 from .providers.quark import QuarkDriveProvider
 from .candidate_service import CandidateService
 from .stream_service import parse_video_id
