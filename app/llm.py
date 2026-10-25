@@ -425,9 +425,13 @@ async def review_candidates(cands: list[dict], *, keyword: str = "",
     """前端 ai-review 端点入口：SKIM 概要甄选 → 选 keep=true 候选（按 AI 评分取 LLM_DEEP_TOP_N） →
     DEEP PARSE 批量解析 → 返回规整 items（格式同旧版，前端无需改）。"""
     from . import config as _cfg, settings as _stg
+    _SKIM_N = max(3, int(_stg.get("LLM_SKIM_TOP_N") or _cfg.LLM_SKIM_TOP_N))
     _DEEP_N = max(1, int(_stg.get("LLM_DEEP_TOP_N") or _cfg.LLM_DEEP_TOP_N))
 
-    # 1. SKIM：所有候选概要
+    # 0. SKIM TOP N 截断（按配置；路由层已做一次，这里再截确保 SKIM 规模可控）
+    cands = cands[:_SKIM_N]
+
+    # 1. SKIM：SKIM_TOP_N 个候选概要
     summary = []
     for c in cands:
         fs = c.get("files") or []

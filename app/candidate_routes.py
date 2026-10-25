@@ -427,10 +427,14 @@ async def candidates_ai_review(request: Request):
     raw = body.get("candidates")
     if not isinstance(raw, list) or not raw:
         return JSONResponse({"detail": "candidates 不能为空"}, status_code=400)
-    # 输入规整为小而结构化的元数据（截断防注入与 token 膨胀），上限 30 条；
-    # 仅有效候选（前端 inspect 过的）带 files，每候选最多 40 个文件
+    # 进入 AI 链前先按 SKIM 配置截断（搜索链已在规格排序后截 SKIM_TOP_N；
+    # 这里路由层只做安全上限，真正的 SKIM TOP N 在 llm.review_candidates 内部按配置再截一次）
+    _SKIM_N = max(3, int(settings.get("LLM_SKIM_TOP_N")
+                         or config.LLM_SKIM_TOP_N
+                         or 15))
+    _UPPER = max(_SKIM_N, 50)  # 安全上限，前端最多传这么多
     cands: list[dict] = []
-    for it in raw[:30]:
+    for it in raw[:_UPPER]:
         if not isinstance(it, dict):
             continue
         vc = it.get("video_count")
