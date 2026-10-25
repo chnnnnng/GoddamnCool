@@ -726,7 +726,8 @@ async def test_search_cache_distinguishes_disks(tmp_db, monkeypatch):
 # ---------- 阶段 7：内容详情直显 + 无视频文件排除 ----------
 
 async def test_search_marks_no_video_content_bad(tmp_db, monkeypatch):
-    """有效链接但内容里没有任何视频文件 → 标记 bad（"内容无视频文件"）。"""
+    """有效链接但内容里没有任何视频文件 → 标记 uncertain（归到'未检测'档，
+    前端不再当有效候选；PanSou 检测为 ok 但内容本身无视频，不该判 bad）。"""
     from app import candidate_service as cs_mod
     from app.providers.base import ShareFile
 
@@ -750,7 +751,7 @@ async def test_search_marks_no_video_content_bad(tmp_db, monkeypatch):
     svc = cs_mod.CandidateService(db_path=tmp_db)
     m, cands, errs, kw = await svc.search("series", "tt5925192", cookie="c=1")
     target = next(c for c in cands if c.share_url == URL_A)
-    assert target.alive_state == "bad"           # 从"有效"中排除
+    assert target.alive_state == "uncertain"    # 归到未检测档（不是 bad）
     assert target.alive_summary == "内容无视频文件"
     assert target.detail is not None
     ok_any = [c for c in cands if c.alive_state == "ok"]

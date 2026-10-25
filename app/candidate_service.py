@@ -260,7 +260,10 @@ class CandidateService:
         await asyncio.gather(*(one(c) for c in targets))
         for c in targets:
             if c.detail is not None and c.detail.get("video_count", 0) == 0:
-                c.alive_state = "bad"
+                # 分享链接 PanSou 检测为"活"但内容里没有视频文件（只有杂项/海报/压缩包等）
+                # → 保留"有效"里不好区分，也不该进"失效"，归到"未检测"这一档让前端把它
+                #    当成没有可用视频的候选展示（不再出现在主按钮候选里）。
+                c.alive_state = "uncertain"
                 c.alive_summary = "内容无视频文件"
 
     async def verify_links(self, items: list[dict]) -> list[dict]:

@@ -97,6 +97,11 @@ class AISearchChain(BaseSearchChain):
             return
 
         # ---- 阶段 1: SKIM（概要甄选）----
+        # 按 PanSou 匹配度 score 降序取前 LLM_SKIM_TOP_N 送 AI 概要甄选
+        _SKIM_N = max(3, int(settings.get("LLM_SKIM_TOP_N") or config.LLM_SKIM_TOP_N))
+        alive_pre.sort(key=lambda p: -getattr(cands[p["ci"]], "score", 0))
+        alive_pre = alive_pre[:_SKIM_N]
+
         summary = []
         for p in alive_pre:
             # 挑 2~3 条样例路径
@@ -135,9 +140,10 @@ class AISearchChain(BaseSearchChain):
                 continue
             sc = sk["score"] if sk["score"] is not None else 50
             keep_idx_pairs.append((send_idx, sc))
-        # 取前 3
+        # 取前 LLM_DEEP_TOP_N（按 AI 评分降序）
+        _DEEP_N = max(1, int(settings.get("LLM_DEEP_TOP_N") or config.LLM_DEEP_TOP_N))
         keep_idx_pairs.sort(key=lambda x: -x[1])
-        top_pairs = keep_idx_pairs[:3]
+        top_pairs = keep_idx_pairs[:_DEEP_N]
 
         if not top_pairs:
             print("[AISearchChain] SKIM 后无 keep，跳过 DEEP")

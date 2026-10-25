@@ -27,6 +27,8 @@ EDITABLE: dict[str, type] = {
     "LLM_API_BASE": str,            # 大语言模型 API 地址（OpenAI 兼容，留空禁用 AI 功能）
     "LLM_API_KEY": str,             # 大语言模型 API Key（管理员统一填写，回显打码）
     "LLM_MODEL": str,               # 大语言模型名称（如 gpt-4o-mini / qwen-plus）
+    "LLM_SKIM_TOP_N": int,          # SKIM 阶段最多送几个 alive 候选给 AI（按匹配度降序）
+    "LLM_DEEP_TOP_N": int,          # DEEP PARSE 阶段最多解析几个 keep=true 候选（按 AI 评分降序）
 }
 
 # 允许留空的字符串配置（留空含义见 META）
@@ -53,6 +55,8 @@ SETTINGS_META: dict[str, str] = {
                     "留空禁用 AI 精选/文件名解析等高级功能）",
     "LLM_API_KEY": "大语言模型 API Key（管理员统一填写，保存后回显打码，普通用户不可见）",
     "LLM_MODEL": "大语言模型名称（如 gpt-4o-mini / qwen-plus / deepseek-chat）",
+    "LLM_SKIM_TOP_N": "AI 精选阶段 1：最多送几个 alive 候选给 AI 做概要甄选（按匹配度降序，默认 15）",
+    "LLM_DEEP_TOP_N": "AI 精选阶段 2：AI 评分后最多选几个 keep=true 候选做详细文件名解析（默认 3）",
 }
 
 _cache: dict = {}
