@@ -28,7 +28,7 @@ from fastapi.responses import JSONResponse
 from . import config, db, llm, settings
 from .auth import require_user
 from .matcher import _title_keys_similarity
-from .name_parser import canonical_with_context, spec_dict
+from .name_parser import canonical_with_context, spec_dict, normalize_resolution
 from .name_parser import parser as name_parser
 from .search_chains import BaseSearchChain, AISearchChain  # 需求第 3 条：普通链/AI 链
 from .tmdb import fetch_meta
@@ -476,7 +476,8 @@ async def candidates_ai_review(request: Request):
             if orig:
                 info = name_parser.parse(os.path.basename(orig))
                 # 用 AI 返回的规格元数据增强 info（覆盖 path 解析不到的字段）
-                ai_res = pf.get("resolution") or info.resolution
+                ai_res_raw = pf.get("resolution") or info.resolution
+                ai_res = normalize_resolution(ai_res_raw) or ai_res_raw
                 ai_src = pf.get("source") or info.source
                 ai_codec = pf.get("codec") or info.codec
                 ai_audio = pf.get("audio") or (info.audio[0] if info.audio else None)

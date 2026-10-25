@@ -507,12 +507,37 @@ def spec_dict(info_or_name: "str | ParsedInfo") -> dict:
         else parser.parse(info_or_name)
     spec: dict = {}
     for key in ("resolution", "source", "codec"):
-        if getattr(info, key):
-            spec[key] = getattr(info, key)
+        val = getattr(info, key)
+        if val:
+            spec[key] = normalize_resolution(val) if key == "resolution" else val
     for key in ("audio", "subtitle", "languages", "extras"):
         if getattr(info, key):
             spec[key] = list(getattr(info, key))
     return spec
+
+
+_RESOLUTION_NORMALIZE = {
+    # 4K 等价归一
+    "4K": "2160p", "UHD": "2160p", "UHD4K": "2160p",
+    "4320P": "2160p", "2160P": "2160p", "2160": "2160p",
+    # 8K
+    "8K": "4320p", "4320P": "4320p",
+    # 1080p 相关
+    "FHD": "1080p", "1080P": "1080p",
+    # 720p
+    "HD": "720p", "720P": "720p",
+}
+
+
+def normalize_resolution(val: str | None) -> str | None:
+    """把各种分辨率写法归一化成唯一形式。
+
+    4K/UHD/2160p → "2160p"；8K → "4320p"；FHD/1080p → "1080p"；HD/720p → "720p"。
+    其他格式原样返回（如 "480p"、"576p"）。"""
+    if not val:
+        return None
+    key = str(val).strip().upper().replace("HD2160P", "2160P")
+    return _RESOLUTION_NORMALIZE.get(key, str(val).strip().lower())
 
 
 # 模块级单例，调用方直接 import 使用

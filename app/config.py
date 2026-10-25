@@ -70,10 +70,9 @@ LITE_DAILY_SEARCH_LIMIT: int = int(os.environ.get("LITE_DAILY_SEARCH_LIMIT", "50
 LITE_DAILY_TRANSFER_LIMIT: int = int(os.environ.get("LITE_DAILY_TRANSFER_LIMIT", "10"))
 # 搜索结果与分享详情缓存有效期（秒，默认 1 天）；0 关闭缓存
 SEARCH_CACHE_TTL: float = float(os.environ.get("SEARCH_CACHE_TTL", str(86400)))
-# 搜索后对"有效"候选做内容解析（详情直显 + 无视频排除）的最大条数
-INSPECT_LIMIT: int = int(os.environ.get("INSPECT_LIMIT", "12"))
-# 新参数（admin 页面可配）：INSPECT_TOP_N 覆盖 INSPECT_LIMIT；MIN_VIDEO_SIZE_H 存疑阈值
-INSPECT_TOP_N: int = int(os.environ.get("INSPECT_TOP_N", os.environ.get("INSPECT_LIMIT", "12")))
+# 搜索后对"有效"候选做内容解析的最大条数
+INSPECT_LIMIT: int = int(os.environ.get("INSPECT_LIMIT", "30"))
+INSPECT_TOP_N: int = int(os.environ.get("INSPECT_TOP_N", os.environ.get("INSPECT_LIMIT", "30")))
 MIN_VIDEO_SIZE_H: float = float(os.environ.get("MIN_VIDEO_SIZE_H", "0.5"))
 
 # 大语言模型（可选高级功能）：OpenAI 兼容 API，管理员在 /admin 在线配置；

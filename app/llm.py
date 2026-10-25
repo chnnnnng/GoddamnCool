@@ -422,8 +422,11 @@ async def parse_candidates_deep(
 
 async def review_candidates(cands: list[dict], *, keyword: str = "",
                             title: str = "", season: int | None = None) -> list[dict]:
-    """前端 ai-review 端点入口：SKIM 概要甄选 → 选 keep=true 候选 →
+    """前端 ai-review 端点入口：SKIM 概要甄选 → 选 keep=true 候选（按 AI 评分取 LLM_DEEP_TOP_N） →
     DEEP PARSE 批量解析 → 返回规整 items（格式同旧版，前端无需改）。"""
+    from . import config as _cfg, settings as _stg
+    _DEEP_N = max(1, int(_stg.get("LLM_DEEP_TOP_N") or _cfg.LLM_DEEP_TOP_N))
+
     # 1. SKIM：所有候选概要
     summary = []
     for c in cands:
@@ -436,19 +439,28 @@ async def review_candidates(cands: list[dict], *, keyword: str = "",
         })
     skims = await skim_candidates(summary, keyword=keyword, title=title, season=season)
 
-    # 2. 挑 keep=true 且有 files 的候选，全部走 DEEP PARSE（批量一次请求）
-    deep_send: list[dict] = []
-    deep_meta: list[tuple[int, int]] = []  # (deep_idx, 原 cands 下标)
+    # 2. 挑 keep=true 且有 files 的候选，按 AI 评分降序取 TOP N
+    keep_idx_pairs: list[tuple[int, int]] = []  # (send_idx, ai_score)
     for send_i, sk in enumerate(skims):
         if not sk["keep"]:
             continue
-        c = cands[send_i]
-        fs = c.get("files") or []
+        fs = cands[send_i].get("files") or []
         if not fs:
             continue
+        sc = sk["score"] if sk["score"] is not None else 50
+        keep_idx_pairs.append((send_i, sc))
+    keep_idx_pairs.sort(key=lambda x: -x[1])
+    keep_idx_pairs = keep_idx_pairs[:_DEEP_N]
+
+    # 3. DEEP PARSE 批量一次请求
+    deep_send: list[dict] = []
+    deep_meta: list[tuple[int, int]] = []  # (deep_idx, 原 cands 下标)
+    for deep_i, (send_i, _sc) in enumerate(keep_idx_pairs):
+        c = cands[send_i]
+        fs = c.get("files") or []
         paths = [f.get("path") or f.get("name") or "" for f in fs]
         deep_send.append({"title": c.get("title"), "paths": paths})
-        deep_meta.append((len(deep_send) - 1, send_i))
+        deep_meta.append((deep_i, send_i))
 
     deep_results: list[dict] = []
     if deep_send:

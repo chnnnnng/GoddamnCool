@@ -36,6 +36,20 @@ VIDEO_EXT = {".mp4", ".mkv", ".avi", ".mov", ".flv", ".webm", ".ts",
              ".m2ts", ".mpg", ".mpeg", ".m4v", ".iso"}
 
 
+def _is_alive(c) -> bool:
+    """判定候选是否属于"有效"档。
+
+    - alive_state in ("ok", "passcode", "locked") → 明确 alive
+    - alive_state 为空/None → 也视为 alive（非 quark 链接跳过了 verify_links，
+      不是真的"无效"，只是没被检测过）
+    - alive_state in ("bad", "uncertain", "need_code", "unsupported") → 不算
+    """
+    st = c.alive_state
+    if not st:
+        return True
+    return st in ("ok", "passcode", "locked")
+
+
 def _human_size_to_float_h(val) -> float:
     """把 _human_size 产生的 "44.2GB" / "108.5MB" / "0B" 等转成 float GB。"""
     if val is None:
@@ -75,15 +89,17 @@ class BaseSearchChain:
             vtype, id, keyword=keyword, disks=disks, cookie=cookie)
 
         # ---- 阶段 B：对 alive 候选做普通解析（inspect_share）----
-        # alive_state 为空/None 也视为有效（patch_search 直接 mock svc.search
-        # 返回候选时不带 alive_state，正常生产 verify_links 之后填 ok/bad）
-        alive = [c for c in cands
-                 if not c.alive_state or c.alive_state == "ok"]
+        # alive_state 为空/None 也视为 alive（非 quark 链接跳过了 verify_links）
+        alive = [c for c in cands if _is_alive(c)]
         alive.sort(key=lambda c: -c.score)  # 匹配度降序
         _INSPECT_N = max(3, int(settings.get("INSPECT_TOP_N")
                                 or settings.get("INSPECT_LIMIT")
                                 or config.INSPECT_TOP_N))
-        targets = alive[:_INSPECT_N]
+        # inspect_share 是 quark 专属（调用 provider.list_share_files），
+        # 只对 quark 磁盘链接调；非 quark 的候选仍算 alive 但不 inspect
+        quark_alive = [c for c in alive if c.disk == "quark"
+                       and (not c.alive_state or c.alive_state == "ok")]
+        targets = quark_alive[:_INSPECT_N]
         if targets and cookie:
             sem = asyncio.Semaphore(4)
 
@@ -113,8 +129,7 @@ class BaseSearchChain:
                 c.alive_summary = f"内容体积过小（< {_MIN_SIZE_H}GB）"
 
         # ---- 阶段 D：规格综合分排序 ----
-        alive_final = [c for c in cands
-                       if not c.alive_state or c.alive_state == "ok"]
+        alive_final = [c for c in cands if _is_alive(c)]
         alive_final.sort(key=self._spec_score, reverse=True)
 
         # ---- 阶段 E：所有候选补规则 canonical ----
@@ -188,8 +203,7 @@ class AISearchChain(BaseSearchChain):
             return
 
         # ---- 0. 从普通链最终的 alive 候选里挑（已按规格排过序）----
-        alive = [c for c in cands
-                 if not c.alive_state or c.alive_state == "ok"]
+        alive = [c for c in cands if _is_alive(c)]
         if not alive:
             return
         _SKIM_N = max(3, int(settings.get("LLM_SKIM_TOP_N") or config.LLM_SKIM_TOP_N))
@@ -298,7 +312,11 @@ class AISearchChain(BaseSearchChain):
         ai_year = pf.get("year") if pf.get("year") is not None else info.year
 
         # 用 AI 规格覆盖 info，让 canonical 自动带上
-        info.resolution = pf.get("resolution") or info.resolution
+        # resolution 走归一化（4K→2160p, 8K→4320p 等）避免 AI 和 parser 产出不一致
+        ai_res_raw = pf.get("resolution")
+        if ai_res_raw:
+            from .name_parser import normalize_resolution
+            info.resolution = normalize_resolution(ai_res_raw) or info.resolution
         info.source = pf.get("source") or info.source
         ai_codec = pf.get("codec") or ""
         ai_audio = pf.get("audio") or ""
