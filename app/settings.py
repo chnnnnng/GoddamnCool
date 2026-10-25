@@ -31,6 +31,8 @@ EDITABLE: dict[str, type] = {
     "LLM_MODEL": str,               # 大语言模型名称（如 gpt-4o-mini / qwen-plus）
     "LLM_REVIEW_TOP_N": int,          # REVIEW 阶段最多送几个 alive 候选给 AI（按匹配度降序）
     "LLM_DEEPPARSE_TOP_N": int,          # DEEPPARSE 阶段最多解析几个 keep=true 候选（按 AI 评分降序）
+    "API_LOG_DETAILS": bool,             # 开启 API 调用完整 request/response 日志
+    "API_LOG_MAX_LEN": int,              # 详细日志单次截断上限（字符；0=不截断）
 }
 
 # 允许留空的字符串配置（留空含义见 META）
@@ -61,6 +63,8 @@ SETTINGS_META: dict[str, str] = {
     "LLM_MODEL": "大语言模型名称（如 gpt-4o-mini / qwen-plus / deepseek-chat）",
     "LLM_REVIEW_TOP_N": "AI 精选阶段 1：最多送几个 alive 候选给 AI 做概要甄选（按匹配度降序，默认 10）",
     "LLM_DEEPPARSE_TOP_N": "AI 精选阶段 2：AI 评分后最多选几个 keep=true 候选做详细文件名解析（默认 3）",
+    "API_LOG_DETAILS": "API 调用日志：开启后在 admin 「最近 30 条」里可查看完整 request/response（默认关闭，节省存储空间）",
+    "API_LOG_MAX_LEN": "API 详细日志单次截断上限（字符；0=不截断，默认 8000）",
 }
 
 _cache: dict = {}

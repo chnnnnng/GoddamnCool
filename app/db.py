@@ -557,7 +557,45 @@ def get_cache_info(db_path: str) -> dict:
 def record_api_call(db_path: str, *, kind: str, endpoint: str = "",
                     duration_ms: int = 0, success: bool = True,
                     error: str = "", meta: dict | None = None) -> None:
-    """记录一次外部 API 调用。后台任务，忽略失败（不能让统计影响主流程）。"""
+    """记录一次外部 API 调用。后台任务，忽略失败（不能让统计影响主流程）。
+
+    管理员可通过 settings.API_LOG_DETAILS 开关控制是否保存完整 request/response：
+    - False（默认）：meta 只保留基础字段（model/imdb_id/vtype 等），节省空间
+    - True：保留完整 prompt + response 摘要，单字段按 API_LOG_MAX_LEN 截断
+    """
+    meta = meta or {}
+    try:
+        from . import settings as _stg, config as _cfg
+        _details = bool(_stg.get("API_LOG_DETAILS", default=_cfg.API_LOG_DETAILS))
+        _max_len = int(_stg.get("API_LOG_MAX_LEN") or _cfg.API_LOG_MAX_LEN or 0)
+    except Exception:
+        _details = False
+        _max_len = 0
+
+    if not _details:
+        # 简略版：只保留基础字段，丢弃 request/response 等大字段
+        _KEEP = {"model", "imdb_id", "vtype", "source", "keyword", "query",
+                 "cache_hit", "items", "results", "total", "count", "ok", "dup_count"}
+        meta = {k: v for k, v in meta.items()
+                if k in _KEEP and not isinstance(v, (str, dict, list))
+                   or (k in _KEEP and isinstance(v, str) and len(v) < 200)}
+        # 保留顶层数字/短字符串，丢掉嵌套 request/response 整包
+        meta.pop("request", None)
+        meta.pop("response", None)
+        meta.pop("error_detail", None)
+    else:
+        # 详细版：对长字符串截断到 API_LOG_MAX_LEN（0=不截断）
+        if _max_len > 0:
+            def _truncate(v):
+                if isinstance(v, str) and len(v) > _max_len:
+                    return v[:_max_len] + f"…[truncated {len(v) - _max_len} chars]"
+                if isinstance(v, dict):
+                    return {k: _truncate(x) for k, x in v.items()}
+                if isinstance(v, list):
+                    return [_truncate(x) for x in v]
+                return v
+            meta = _truncate(meta)
+
     try:
         with _lock, _conn(db_path) as c:
             c.execute(

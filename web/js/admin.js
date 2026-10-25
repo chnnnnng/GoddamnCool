@@ -297,7 +297,7 @@
         try { metaText = typeof r.meta === 'string' ? r.meta : JSON.stringify(r.meta || {}); }
         catch (e) { metaText = ''; }
         if (r.error) metaText += (metaText ? ' · ' : '') + 'err: ' + r.error;
-        tr.appendChild(el('td', 'meta', metaText.slice(0, 80)));
+        tr.appendChild(el('td', 'td-meta', metaText.slice(0, 120)));
         // 完整请求/响应查看按钮
         var tdAct = document.createElement('td');
         var btn = document.createElement('button');
