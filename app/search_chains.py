@@ -86,18 +86,22 @@ class AISearchChain(BaseSearchChain):
             self._record_inspect_parses(detail.get("files") or [])
         return detail
 
-    async def _ai_enrich(self, cands: list[dict], *, keyword: str, title: str,
+    async def _ai_enrich(self, cands: list, *, keyword: str, title: str,
                          season: int | None, cookie: str) -> None:
-        """对 cands 做 AI 精选+文件名合并解析（需求第 1/2/4 条）。"""
+        """对 cands 做 AI 精选+文件名合并解析（需求第 1/2/4 条）。
+
+        入参 cands 是 SearchCandidate 对象列表（candidate_service 返回 dataclass），
+        但 .detail 字段是 dict（文件列表/规格等）。SearchCandidate 本身用属性访问，
+        detail 内部 dict 用 .get()。回填 ai 标记到 c.detail（dict 字段）。"""
         if not llm.configured() or not cands:
             return
         VIDEO_EXT = {".mp4", ".mkv", ".avi", ".mov", ".flv", ".webm", ".ts",
                      ".m2ts", ".mpg", ".mpeg", ".m4v", ".iso"}
-        # 每个候选的 files 先过滤视频 → 合并 → 紧凑 paths + 映射
         compact_per_cand: list[tuple[list[str], list[list[int]], list[dict]]] = []
         send_cands: list[dict] = []
         for c in cands:
-            files = ((c.get("detail") or {}).get("files") or [])
+            d = getattr(c, "detail", None) or {}
+            files = d.get("files") or []
             vf = [f for f in files
                   if os.path.splitext((f.get("path") or f.get("name") or ""))[1].lower() in VIDEO_EXT]
             vf = vf[:40]
@@ -105,12 +109,12 @@ class AISearchChain(BaseSearchChain):
             compact, mapping = llm.compact_file_paths(paths)
             compact_per_cand.append((compact, mapping, vf))
             send_cands.append({
-                "title": c.get("title"),
-                "source": c.get("source"),
-                "published": c.get("published"),
-                "alive_state": c.get("alive_state"),
-                "video_count": (c.get("detail") or {}).get("video_count"),
-                "total_size_h": (c.get("detail") or {}).get("total_size_h"),
+                "title": getattr(c, "title", None),
+                "source": getattr(c, "source", None),
+                "published": getattr(c, "published", None),
+                "alive_state": getattr(c, "alive_state", None),
+                "video_count": d.get("video_count"),
+                "total_size_h": d.get("total_size_h"),
                 "files": [{"path": p} for p in compact],
             })
         if not any(sp["files"] for sp in send_cands):
@@ -121,13 +125,15 @@ class AISearchChain(BaseSearchChain):
         except llm.LLMError as e:
             print(f"[AISearchChain] AI enrich 失败: {e}")
             return
-        # 展开回填：紧凑下标 → 原始下标 → 给每个原始文件赋元数据
         by = {it["index"]: it for it in items}
         for ci, (compact, mapping, vf) in enumerate(compact_per_cand):
             it = by.get(ci)
             if not it:
                 continue
-            cands[ci]["ai"] = it
+            # SearchCandidate 本身无 __setitem__，ai 标记挂在其 detail dict 上
+            detail = getattr(cands[ci], "detail", None) or {}
+            detail["ai"] = it
+            setattr(cands[ci], "detail", detail)
             files_by = {pf["ci"]: pf for pf in (it.get("files") or [])}
             for compact_i, orig_indices in enumerate(mapping):
                 pf = files_by.get(compact_i)
