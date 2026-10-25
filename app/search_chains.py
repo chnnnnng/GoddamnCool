@@ -81,7 +81,6 @@ class AISearchChain(BaseSearchChain):
             files = d.get("files") or []
             vf = [f for f in files
                   if os.path.splitext((f.get("path") or f.get("name") or ""))[1].lower() in VIDEO_EXT]
-            vf = vf[:40]
             paths = [f.get("path") or f.get("name") or "" for f in vf]
             compact, mapping = llm.compact_file_paths(paths)
             compact_per_cand.append((compact, mapping, vf))

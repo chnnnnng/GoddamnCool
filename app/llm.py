@@ -115,64 +115,115 @@ def _int_or_none(v):
     return int(v)
 
 
-# ---- 文件名合并：同前缀仅数字不同的分组合并为模板 ----
+# ---- 文件名合并：按共同后缀跨目录压缩为模板 ----
 
-_NUMERIC_RE = re.compile(r"^(.*?)(\d+)(.*?)(\.[^.]+)$", re.IGNORECASE)
+def _longest_common_suffix(strings: list[str]) -> str:
+    """一组字符串的最长公共后缀。"""
+    if not strings:
+        return ""
+    ref = strings[0]
+    max_len = len(ref)
+    for s in strings[1:]:
+        while max_len > 0 and not s.endswith(ref[-max_len:]):
+            max_len -= 1
+        if max_len == 0:
+            return ""
+    return ref[-max_len:]
+
+
+def _split_path(path: str) -> tuple[str, str, str]:
+    """拆 path → (dirname, stem, ext_with_dot)。"""
+    dirname = path.rsplit("/", 1)[0] if "/" in path else ""
+    basename = os.path.basename(path)
+    m = re.match(r"^(.+)(\.[^.]+)$", basename)
+    if m:
+        stem, ext = m.groups()
+    else:
+        stem, ext = basename, ""
+    return dirname, stem, ext
 
 
 def compact_file_paths(paths: list[str]) -> tuple[list[str], list[list[int]]]:
-    """把文件路径按 basename 的数字片段合并：
+    """把文件路径压缩为「{{变化部分}} + 共同后缀」。
 
-    输入 ["狂飙.S01E01.mp4", "狂飙.S01E02.mp4", "狂飙.S01E12.mp4",
-          "花絮.mp4", "The.Knockout.S01E01.mkv"]
+    按扩展名分桶 → 桶内按 stem 的最长公共后缀递归聚类（不同簇独立压缩）→
+    簇内 >=2 条才合并，独立路径原样保留。"""
+    if not paths:
+        return [], []
 
-    合并为 ["狂飙.S01E{{01,02,12}}.mp4", "花絮.mp4", "The.Knockout.S01E01.mkv"]
-    映射  [[0,1,2], [3], [4]]
+    splits = [_split_path(p) for p in paths]
 
-    合并条件：basename 拆成 (prefix, num, suffix, ext) 后，
-    prefix/suffix/ext 全相同、仅 num 不同（num 长度必须一致，避免 01 vs 1 混）。
-    合并后返回 (紧凑路径数组, 每个紧凑条目对应的原始下标列表)。"""
-    # 先按目录前缀分组（不同目录不合并，避免跨目录混淆）
-    by_dir: dict[str, list[tuple[int, str]]] = {}
-    for i, p in enumerate(paths):
-        dirname = p.rsplit("/", 1)[0] if "/" in p else ""
-        by_dir.setdefault(dirname, []).append((i, p))
+    # 按扩展名分桶
+    by_ext: dict[str, list[int]] = {}
+    for i, (_d, _s, ext) in enumerate(splits):
+        by_ext.setdefault(ext, []).append(i)
+
     compact: list[str] = []
     mapping: list[list[int]] = []
-    for dirname, entries in by_dir.items():
-        # 按可合并键分组
-        groups: dict[tuple[str, str, str, int], list[tuple[int, str, str]]] = {}
-        singles: list[tuple[int, str]] = []
-        for orig_i, p in entries:
-            name = os.path.basename(p)
-            m = _NUMERIC_RE.match(name)
-            if m:
-                prefix, num, suffix, ext = m.groups()
-                key = (prefix, suffix, ext, len(num))  # 同长度才合
-                groups.setdefault(key, []).append((orig_i, num, p))
+
+    def _cluster(idxs: list[int]) -> None:
+        """贪心聚类：按 stem 最长公共后缀拆成可压缩簇。"""
+        if len(idxs) < 2:
+            for i in idxs:
+                compact.append(paths[i])
+                mapping.append([i])
+            return
+        # 贪心：取第一个 stem 做锚，找所有和它有 >=5 长共同后缀的
+        anchor = splits[idxs[0]][1]
+        cluster = [idxs[0]]
+        rest: list[int] = []
+        for i in idxs[1:]:
+            s = splits[i][1]
+            lcs_pair = _longest_common_suffix([anchor, s])
+            if len(lcs_pair) >= 5:
+                cluster.append(i)
             else:
-                singles.append((orig_i, p))
-        # 可合并组：至少 2 条才合
-        for key, items in groups.items():
-            if len(items) >= 2:
-                prefix, suffix, ext, _ = key
-                nums = sorted({n for _, n, _ in items})
-                merged_basename = f"{prefix}{{{','.join(nums)}}}{suffix}{ext}"
-                full = (dirname + "/" if dirname else "") + merged_basename
-                compact.append(full)
-                mapping.append([orig_i for orig_i, _, _ in items])
+                rest.append(i)
+        # 先处理 cluster（簇内再确认整体 LCS 够长）
+        if len(cluster) >= 2:
+            stems_c = [splits[i][1] for i in cluster]
+            lcs = _longest_common_suffix(stems_c)
+            if lcs and not lcs.startswith("."):
+                for sep in (".", "_", "-"):
+                    idx = lcs.find(sep)
+                    if 0 < idx < len(lcs) - 1:
+                        suffix = lcs[idx + 1:]
+                        if suffix and all(s.endswith(sep + suffix) for s in stems_c):
+                            lcs = sep + suffix
+                            break
+            if len(lcs) >= 5:
+                variants = []
+                for i in cluster:
+                    d, s, _e = splits[i]
+                    var_stem = s[: -len(lcs)]
+                    if d:
+                        variants.append(f"{d}/{var_stem}" if var_stem else d)
+                    else:
+                        variants.append(var_stem)
+                merged = "{{" + ", ".join(variants) + "}}" + lcs + splits[cluster[0]][2]
+                compact.append(merged)
+                mapping.append(cluster)
             else:
-                orig_i, _, p = items[0]
-                singles.append((orig_i, p))
-        for orig_i, p in singles:
-            compact.append(p)
-            mapping.append([orig_i])
+                # 簇内 LCS 仍不够长 → 逐条
+                for i in cluster:
+                    compact.append(paths[i])
+                    mapping.append([i])
+        else:
+            compact.append(paths[cluster[0]])
+            mapping.append(cluster)
+        # 递归处理 rest
+        if rest:
+            _cluster(rest)
+
+    for ext, idxs in by_ext.items():
+        _cluster(idxs)
+
     return compact, mapping
 
 
 # ---- AI 精选 + 文件名解析（一次调用完成两项任务） ----
 
-REVIEW_SKILL_VERSION = 3  # v3: AI 返回结构化元数据，服务端拼规范名；v2 直接吐 canonical
+REVIEW_SKILL_VERSION = 4  # v4: 无论 keep true/false 都必须解析所有 files；压缩格式更激进
 
 REVIEW_SKILL = """你是网盘影视资源搜索结果的甄别与解析助手。根据目标影片信息与候选资源列表，完成两项任务：
 
@@ -182,8 +233,10 @@ REVIEW_SKILL = """你是网盘影视资源搜索结果的甄别与解析助手�
 3. 去重：内容实质相同的候选归为一组，每组仅推荐一个最佳候选（其余标记 dup_of 指向组内最佳的 index）；
 4. 解析：从候选标题中提取影片名（中文优先）、年份、季数。
 
-二、解析文件名（仅当候选附带 files 数组时）：files 是合并后的模板路径，
-每一条模板代表一组同前缀仅数字不同的文件（如 "S01E{{01,02,12}}" 代表 01/02/12 三集），
+二、解析文件名（⚠️ 无论 keep=true 还是 keep=false，只要候选输入带 files 数组，就必须逐一解析全部模板！）：
+files 是合并后的模板路径，常见格式：
+  "{{S01/S01E01, S01/S01E02, ..., S05/S05E16}}.中英字幕.BDrip.1080p-人人影视.mp4"
+每一条模板里 {{...}} 枚举了变化部分（季目录 + 集号），后面的固定部分是扩展名+质量标记。
 ci 为该模板在候选 files 数组中的下标。对每个模板返回：
 - title：推断的影片中文名（中文优先，实在无法判断时可给拼音或原文）；
 - season / episode / year：从目录/路径提取的整数或 null；
@@ -191,7 +244,7 @@ ci 为该模板在候选 files 数组中的下标。对每个模板返回：
 - source：如 "WEB-DL" / "BluRay" / "WebRip" / "DVDRip"；
 - codec：如 "H.265" / "H.264" / "HEVC"；
 - audio：音频编码字符串（如 "Atmos" / "DDP5.1"）或 null；
-- group：出品/发布组（如 "BlackTV" / "CHD"）或 null。
+- group：出品/发布组（如 "人人影视" / "CHD"）或 null。
 
 ⚠️ 不要再输出 canonical 规范名字符串——服务端会用你给的元数据自动拼接。
 
@@ -203,8 +256,8 @@ ci 为该模板在候选 files 数组中的下标。对每个模板返回：
 - score：0~100 整数，被剔除的候选可为 null；
 - dup_of：与哪个候选重复（填对方的 index），自身是组内最佳或无重复时为 null；
 - title/year/season：从候选标题解析，无法判断时为 null；
-- files：仅对输入带 files 的候选输出；ci 为该候选的 files 数组下标，
-  必须逐一覆盖其全部 files；title 字段对无标题文件可尽力给出，
+- files：仅对输入带 files 的候选输出，且 **无论 keep 是 true 还是 false，都必须逐一覆盖其全部 files 模板**；
+  ci 为该候选的 files 数组下标，不能遗漏；title 字段对无标题文件可尽力给出，
   其他字段无法判断时为 null。"""
 
 
