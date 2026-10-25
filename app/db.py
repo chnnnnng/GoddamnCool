@@ -564,8 +564,8 @@ def record_api_call(db_path: str, *, kind: str, endpoint: str = "",
                 """INSERT INTO api_calls (kind, endpoint, duration_ms, success, error, meta)
                    VALUES (?, ?, ?, ?, ?, ?)""",
                 (kind, endpoint, int(duration_ms), 1 if success else 0,
-                 str(error)[:200],
-                 json.dumps(meta or {}, ensure_ascii=False)[:1000]),
+                 str(error)[:500],
+                 json.dumps(meta or {}, ensure_ascii=False)[:20000]),
             )
     except Exception:
         pass  # 统计失败不影响主流程

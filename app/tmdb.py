@@ -182,7 +182,10 @@ async def fetch_meta(imdb_id: str, vtype: str, db_path: str | None = None,
         db.save_tmdb_meta(path, imdb_id, vtype, data)
         dur_ms = int((_time.monotonic() - t0) * 1000)
         db.record_api_call(path, kind="tmdb", endpoint=f"fetch_meta.{vtype}",
-                           duration_ms=dur_ms, success=True, meta=meta_rec)
+                           duration_ms=dur_ms, success=True,
+                           meta={**meta_rec, "response": {
+                               "name_zh": name_zh, "name_en": name_en,
+                               "year": date[:4], "videos": len(videos)}})
         return VideoMeta(data)
     except Exception as e:
         dur_ms = int((_time.monotonic() - t0) * 1000)

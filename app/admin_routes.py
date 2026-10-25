@@ -160,6 +160,11 @@ async def get_api_stats(request: Request):
     summary = db.get_api_stats(config.DB_PATH)
     daily = db.get_api_stats_daily(config.DB_PATH, days=14)
     recent = db.get_api_stats_recent(config.DB_PATH, limit=30)
+    # meta 是 JSON 字符串，parse 成 dict 再返回（前端可直接 JSON.stringify 美化）
+    import json as _json
+    for r in recent:
+        try: r["meta"] = _json.loads(r.get("meta") or "{}")
+        except Exception: r["meta"] = {}
     # 总汇总
     total = sum(s["total"] for s in summary.values())
     total_ok = sum(s["ok"] for s in summary.values())

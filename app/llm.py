@@ -75,6 +75,16 @@ async def chat(messages: list[dict], *, temperature: float = 0.2) -> str:
     headers = {"Authorization": f"Bearer {settings.get('LLM_API_KEY').strip()}"}
     t0 = _time.monotonic()
     model = settings.get("LLM_MODEL").strip() or ""
+    # 请求摘要：system prompt + 首条 user prompt（完整 request messages 太大，
+    # 且含 title/vtype 等上下文，足于定位是哪次 SKIM/DEEPPARSE）
+    req_sys = ""
+    req_user = ""
+    for m in messages:
+        if m.get("role") == "system":
+            req_sys = (m.get("content") or "")[:400]
+        elif m.get("role") == "user":
+            req_user = (m.get("content") or "")[:800]
+            break
     try:
         async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
             resp = await client.post(url, json=payload, headers=headers)
@@ -82,14 +92,19 @@ async def chat(messages: list[dict], *, temperature: float = 0.2) -> str:
         dur_ms = int((_time.monotonic() - t0) * 1000)
         db.record_api_call(config.DB_PATH, kind="llm", endpoint="chat",
                            duration_ms=dur_ms, success=False,
-                           error=str(e)[:200], meta={"model": model})
+                           error=str(e)[:500],
+                           meta={"model": model, "request": {
+                               "system": req_sys, "user": req_user},
+                           "response": ""})
         raise LLMError(f"请求失败: {e}") from e
     if resp.status_code != 200:
         dur_ms = int((_time.monotonic() - t0) * 1000)
         db.record_api_call(config.DB_PATH, kind="llm", endpoint="chat",
                            duration_ms=dur_ms, success=False,
                            error=f"HTTP {resp.status_code}",
-                           meta={"model": model})
+                           meta={"model": model, "request": {
+                               "system": req_sys, "user": req_user},
+                           "response": resp.text[:1000]})
         raise LLMError(f"HTTP {resp.status_code}: {resp.text[:200]}")
     try:
         content = resp.json()["choices"][0]["message"]["content"]
@@ -97,18 +112,26 @@ async def chat(messages: list[dict], *, temperature: float = 0.2) -> str:
         dur_ms = int((_time.monotonic() - t0) * 1000)
         db.record_api_call(config.DB_PATH, kind="llm", endpoint="chat",
                            duration_ms=dur_ms, success=False,
-                           error=str(e), meta={"model": model})
+                           error=str(e),
+                           meta={"model": model, "request": {
+                               "system": req_sys, "user": req_user},
+                           "response": resp.text[:1000]})
         raise LLMError(f"响应格式异常: {e}") from e
     if not (content or "").strip():
         dur_ms = int((_time.monotonic() - t0) * 1000)
         db.record_api_call(config.DB_PATH, kind="llm", endpoint="chat",
                            duration_ms=dur_ms, success=False,
-                           error="模型返回为空", meta={"model": model})
+                           error="模型返回为空",
+                           meta={"model": model, "request": {
+                               "system": req_sys, "user": req_user},
+                           "response": ""})
         raise LLMError("模型返回为空")
     dur_ms = int((_time.monotonic() - t0) * 1000)
     db.record_api_call(config.DB_PATH, kind="llm", endpoint="chat",
                        duration_ms=dur_ms, success=True,
-                       meta={"model": model})
+                       meta={"model": model, "request": {
+                           "system": req_sys, "user": req_user},
+                       "response": (content or "")[:2000]})
     return content
 
 

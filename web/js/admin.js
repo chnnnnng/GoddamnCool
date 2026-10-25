@@ -280,7 +280,7 @@
     if (!recent.length) {
       var tr0 = document.createElement('tr');
       var td0 = document.createElement('td');
-      td0.colSpan = 6;
+      td0.colSpan = 7;
       td0.className = 'meta';
       td0.textContent = '暂无调用记录';
       tr0.appendChild(td0);
@@ -298,9 +298,55 @@
         catch (e) { metaText = ''; }
         if (r.error) metaText += (metaText ? ' · ' : '') + 'err: ' + r.error;
         tr.appendChild(el('td', 'meta', metaText.slice(0, 80)));
+        // 完整请求/响应查看按钮
+        var tdAct = document.createElement('td');
+        var btn = document.createElement('button');
+        btn.type = 'button';
+        btn.textContent = '查看';
+        btn.style.padding = '2px 8px';
+        btn.addEventListener('click', function () { openCallDetail(r); });
+        tdAct.appendChild(btn);
+        tr.appendChild(tdAct);
         tbody.appendChild(tr);
       });
     }
+  }
+
+  function openCallDetail(r) {
+    var metaStr = '';
+    try {
+      var parsed = typeof r.meta === 'string' ? JSON.parse(r.meta || '{}') : (r.meta || {});
+      metaStr = JSON.stringify(parsed, null, 2);
+    } catch (e) {
+      metaStr = String(r.meta || '');
+    }
+    var body = [
+      'kind:       ' + r.kind,
+      'endpoint:   ' + (r.endpoint || ''),
+      'duration_ms:' + (r.duration_ms || 0),
+      'success:    ' + (r.success ? 'true' : 'false'),
+      'error:      ' + (r.error || ''),
+      'created_at: ' + (r.created_at || ''),
+      '',
+      '---- meta (request / response) ----',
+      metaStr || '(空)',
+    ].join('\n');
+    var w = window.open('', '_blank', 'width=720,height=800');
+    if (!w) { alert('请允许弹窗'); return; }
+    w.document.open();
+    w.document.write(
+      '<html><head><meta charset="utf-8">' +
+      '<title>API 调用详情 — ' + (r.endpoint || r.kind || '') + '</title>' +
+      '<style>' +
+      'body{font-family:ui-monospace,Menlo,Consolas,monospace;background:#111;color:#eee;margin:0;padding:16px;}' +
+      'pre{white-space:pre-wrap;word-break:break-word;margin:0;font-size:13px;line-height:1.5;}' +
+      'h2{font-family:system-ui,-apple-system,sans-serif;font-size:14px;margin:0 0 12px;color:#bbb;font-weight:500;}' +
+      '</style></head><body>' +
+      '<h2>API 调用详情 · ' + (r.kind || '') + ' / ' + (r.endpoint || '') + ' · ' + (r.created_at || '') + '</h2>' +
+      '<pre>' + body + '</pre>' +
+      '</body></html>');
+    w.document.close();
+    w.focus();
   }
 
   function loadStats() {
