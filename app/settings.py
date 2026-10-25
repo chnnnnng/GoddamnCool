@@ -17,8 +17,8 @@ EDITABLE: dict[str, type] = {
     "ADDON_ICON": str,              # Stremio Add-on 图标 URL
     "LITE_DAILY_SEARCH_LIMIT": int, # Lite 用户每日搜索次数上限
     "LITE_DAILY_TRANSFER_LIMIT": int,  # Lite 用户每日转存次数上限
+    "LITE_DAILY_STREAMING_LIMIT": int, # Lite 用户每日 Stremio 在线播放次数上限
     "SEARCH_LIMIT": int,            # 单次搜索返回候选数上限
-    "INSPECT_LIMIT": int,           # 搜索后解析分享详情的最大条数（兼容旧配置，优先 INSPECT_TOP_N）
     "INSPECT_TOP_N": int,           # 普通链：TOP N alive 候选做 inspect_share（规格排序前的匹配度排序上取）
     "MIN_VIDEO_SIZE_H": float,      # 普通链：小于此 GB 数的候选归"存疑"档（0 关闭）
     "SEARCH_CACHE_TTL": int,        # 搜索结果缓存秒数（0 关闭）
@@ -46,8 +46,8 @@ SETTINGS_META: dict[str, str] = {
     "ADDON_ICON": "Stremio Add-on 图标 URL（留空不显示图标）",
     "LITE_DAILY_SEARCH_LIMIT": "Lite 用户每日搜索次数上限（Pro 不限）",
     "LITE_DAILY_TRANSFER_LIMIT": "Lite 用户每日转存次数上限（Pro 不限）",
+    "LITE_DAILY_STREAMING_LIMIT": "Lite 用户每日 Stremio 在线播放次数上限（Pro 不限）",
     "SEARCH_LIMIT": "单次搜索返回的候选数量上限",
-    "INSPECT_LIMIT": "（兼容旧配置）搜索后自动解析分享详情的最大条数",
     "INSPECT_TOP_N": "普通链：TOP N alive 候选做 inspect_share（按匹配度降序取，admin 可配）",
     "MIN_VIDEO_SIZE_H": "普通链：内容体积小于此 GB 数的候选归「存疑」档（0 关闭体积筛选）",
     "SEARCH_CACHE_TTL": "搜索结果缓存有效期（秒，0 表示关闭缓存）",

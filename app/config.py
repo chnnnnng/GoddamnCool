@@ -68,11 +68,12 @@ SEARCH_LIMIT: int = int(os.environ.get("SEARCH_LIMIT", "30"))
 LITE_DAILY_SEARCH_LIMIT: int = int(os.environ.get("LITE_DAILY_SEARCH_LIMIT", "50"))
 # Lite 用户每日转存次数上限（Pro/管理员不限；管理员可在 /admin 页面在线修改）
 LITE_DAILY_TRANSFER_LIMIT: int = int(os.environ.get("LITE_DAILY_TRANSFER_LIMIT", "10"))
+# Lite 用户每日 Stremio 在线播放次数上限（Pro/管理员不限；管理员可在 /admin 页面在线修改）
+LITE_DAILY_STREAMING_LIMIT: int = int(os.environ.get("LITE_DAILY_STREAMING_LIMIT", "50"))
 # 搜索结果与分享详情缓存有效期（秒，默认 1 天）；0 关闭缓存
 SEARCH_CACHE_TTL: float = float(os.environ.get("SEARCH_CACHE_TTL", str(86400)))
 # 搜索后对"有效"候选做内容解析的最大条数
-INSPECT_LIMIT: int = int(os.environ.get("INSPECT_LIMIT", "30"))
-INSPECT_TOP_N: int = int(os.environ.get("INSPECT_TOP_N", os.environ.get("INSPECT_LIMIT", "30")))
+INSPECT_TOP_N: int = int(os.environ.get("INSPECT_TOP_N", "12"))
 MIN_VIDEO_SIZE_H: float = float(os.environ.get("MIN_VIDEO_SIZE_H", "0.5"))
 
 # 大语言模型（可选高级功能）：OpenAI 兼容 API，管理员在 /admin 在线配置；

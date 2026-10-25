@@ -151,7 +151,7 @@ class BaseSearchChain:
         alive = [c for c in cands if _is_alive(c)]
         alive.sort(key=lambda c: -c.score)
         _INSPECT_N = max(3, int(settings.get("INSPECT_TOP_N")
-                                or settings.get("INSPECT_LIMIT")
+
                                 or config.INSPECT_TOP_N))
         targets = alive[:_INSPECT_N]
         if targets and cookie:

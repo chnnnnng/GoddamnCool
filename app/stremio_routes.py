@@ -69,6 +69,12 @@ async def user_stream(stream_token: str, vtype: str, video_id: str):
                 "externalUrl": f"{config.BASE_URL}/panel",
             }]
         return _stream_response(guide, "未绑定网盘 Cookie，请在控制面板绑定")
+    # Lite 用户每日 Stremio 在线播放配额（Pro/管理员不限）
+    if user["role"] != "admin" and user["tier"] != "pro":
+        slimit = settings.get("LITE_DAILY_STREAMING_LIMIT")
+        if db.get_play_count(config.DB_PATH, user["id"]) >= slimit:
+            return _stream_response(
+                [], f"今日播放次数已用完（{slimit}/{slimit}），升级 Pro 解除限制")
     streams, status = await service.get_streams(
         vtype, video_id, cookie=cookie, user_id=user["id"])
     if streams:  # 命中可用流计一次播放（面板统计展示）

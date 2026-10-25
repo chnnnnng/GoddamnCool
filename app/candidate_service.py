@@ -237,7 +237,7 @@ class CandidateService:
         - detail 填充到候选（搜索结果页直显季集/规格摘要）；
         - 内容中无视频文件 → 标记 bad（"内容无视频文件"），排挤出"有效"；
         - 单条解析失败不影响整体（保持原存活状态）。"""
-        targets = [c for c in quark if c.alive_state == "ok"][:settings.get("INSPECT_LIMIT")]
+        targets = [c for c in quark if c.alive_state == "ok"][:settings.get("INSPECT_TOP_N")]
         if not targets:
             return
         sem = asyncio.Semaphore(4)

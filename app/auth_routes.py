@@ -89,7 +89,7 @@ async def logout(request: Request):
 
 
 def _quota_payload(user: dict) -> dict:
-    """两级配额回显（搜索/转存）：今日用量 + 限额/不限 + 历史累计。"""
+    """三级配额回显（搜索/转存/Stremio 在线播放）：今日用量 + 限额/不限 + 历史累计。"""
     unlimited = user["role"] == "admin" or user["tier"] == "pro"
     return {
         "search": {
@@ -104,9 +104,10 @@ def _quota_payload(user: dict) -> dict:
             "unlimited": unlimited,
             "total": db.get_transfer_total(config.DB_PATH, user["id"]),
         },
-        # 播放无配额限制，仅统计展示
         "play": {
             "used": db.get_play_count(config.DB_PATH, user["id"]),
+            "limit": settings.get("LITE_DAILY_STREAMING_LIMIT"),
+            "unlimited": unlimited,
             "total": db.get_play_total(config.DB_PATH, user["id"]),
         },
     }
