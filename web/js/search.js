@@ -423,7 +423,8 @@ function renderCard(c) {
         actions.appendChild(b);
       }
     }
-    const info = el('button', 'sec', '查看内容');
+    const inspected = c.detail && c.detail.files && c.detail.files.length;
+    const info = el('button', 'sec', inspected ? '查看内容' : '解析内容');
     info.disabled = dead;
     info.onclick = () => openDetail(info, c);
     actions.appendChild(info);
@@ -487,7 +488,8 @@ async function openDetail(btn, c) {
   } finally {
     hideLoading();
     btn.disabled = false;
-    btn.textContent = '查看内容';
+    btn.textContent = (c.detail && c.detail.files && c.detail.files.length)
+      ? '查看内容' : '解析内容';
   }
 }
 
