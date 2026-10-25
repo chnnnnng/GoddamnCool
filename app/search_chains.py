@@ -69,68 +69,115 @@ class AISearchChain(BaseSearchChain):
 
     async def _ai_enrich(self, cands: list, *, keyword: str, title: str,
                          season: int | None) -> None:
-        """文件名合并 → AI 精选+元数据解析 → 展开回填 → 存 file_parses。"""
+        """两阶段 AI：SKIM 概要甄选（保留 top3）→ DEEP PARSE 详细解析 → 回填。"""
         if not llm.configured() or not cands:
             return
         VIDEO_EXT = {".mp4", ".mkv", ".avi", ".mov", ".flv", ".webm", ".ts",
                      ".m2ts", ".mpg", ".mpeg", ".m4v", ".iso"}
-        compact_per_cand: list[tuple[list[str], list[list[int]], list[dict]]] = []
-        send_cands: list[dict] = []
-        alive_indices: list[int] = []  # 存活候选在 send_cands 里的下标
+
+        # ---- 0. 预处理所有候选：算 vf / paths / LCP 压缩 ----
+        pre: list[dict] = []  # 每项: {ci, alive, detail, vf, paths, compact, mapping}
         for ci, c in enumerate(cands):
             d = getattr(c, "detail", None) or {}
             files = d.get("files") or []
             vf = [f for f in files
                   if os.path.splitext((f.get("path") or f.get("name") or ""))[1].lower() in VIDEO_EXT]
             paths = [f.get("path") or f.get("name") or "" for f in vf]
-            compact, mapping = llm.compact_file_paths(paths)
-
-            # ---- 过滤：只给 AI 存活候选 ----
-            alive = getattr(c, "alive_state", None) == "ok"
-            if not alive:
-                compact_per_cand.append((compact, mapping, vf))
-                continue
-
-            send_cands.append({
-                "title": getattr(c, "title", None),
-                "source": getattr(c, "source", None),
-                "published": getattr(c, "published", None),
-                "alive_state": getattr(c, "alive_state", None),
-                "video_count": d.get("video_count"),
-                "total_size_h": d.get("total_size_h"),
-                "files": [{"path": p} for p in compact],
+            compact, mapping = llm.compact_file_paths_lcp(paths)
+            pre.append({
+                "ci": ci,
+                "alive": getattr(c, "alive_state", None) == "ok",
+                "detail": d,
+                "vf": vf, "paths": paths,
+                "compact": compact, "mapping": mapping,
             })
-            alive_indices.append(ci)
-            compact_per_cand.append((compact, mapping, vf))
 
-        if not any(sp["files"] for sp in send_cands):
+        alive_pre = [p for p in pre if p["alive"]]
+        if not alive_pre:
             return
+
+        # ---- 阶段 1: SKIM（概要甄选）----
+        summary = []
+        for p in alive_pre:
+            # 挑 2~3 条样例路径
+            sample = p["paths"][:3]
+            summary.append({
+                "title": getattr(cands[p["ci"]], "title", None),
+                "video_count": p["detail"].get("video_count"),
+                "total_size_h": p["detail"].get("total_size_h"),
+                "files_sample": sample,
+            })
         try:
-            items = await llm.review_candidates(
-                send_cands, keyword=keyword, title=title, season=season)
+            skims = await llm.skim_candidates(
+                summary, keyword=keyword, title=title, season=season)
         except llm.LLMError as e:
-            print(f"[AISearchChain] AI enrich 失败: {e}")
+            print(f"[AISearchChain] SKIM 失败: {e}")
             return
-        # items 下标 ↔ send_cands 下标 ↔ alive_indices → 原 cands 下标
-        for send_idx, it in enumerate(items):
-            ci = alive_indices[send_idx]
-            # ai 标记挂在 detail dict 上
+
+        # 把 skim 结果挂到原始 cands；同时选出 keep=true 且 score 最高的 top3
+        for send_idx, sk in enumerate(skims):
+            ci = alive_pre[send_idx]["ci"]
             detail = getattr(cands[ci], "detail", None) or {}
-            detail["ai"] = it
+            detail["ai"] = {
+                "keep": sk["keep"], "score": sk["score"],
+                "reason": sk["reason"], "title": sk["title"],
+                "files": [],  # 阶段 1 不解析 files
+            }
             setattr(cands[ci], "detail", detail)
-            # keep=false 的候选不解析文件名（省 token，后续走规则 canonical）
-            if it.get("keep") is False:
+
+        # 选保留项（keep=true 且有路径）
+        keep_idx_pairs: list[tuple[int, int]] = []  # (send_idx, score)
+        for send_idx, sk in enumerate(skims):
+            if not sk["keep"]:
                 continue
-            compact, mapping, vf = compact_per_cand[ci]
-            files_by = {pf["ci"]: pf for pf in (it.get("files") or [])}
-            for compact_i, orig_indices in enumerate(mapping):
-                pf = files_by.get(compact_i)
+            p = alive_pre[send_idx]
+            if not p["paths"]:
+                continue
+            sc = sk["score"] if sk["score"] is not None else 50
+            keep_idx_pairs.append((send_idx, sc))
+        # 取前 3
+        keep_idx_pairs.sort(key=lambda x: -x[1])
+        top_pairs = keep_idx_pairs[:3]
+
+        if not top_pairs:
+            print("[AISearchChain] SKIM 后无 keep，跳过 DEEP")
+            return
+
+        # ---- 阶段 2: DEEP PARSE ----
+        # 发送完整 LCP 压缩后的 paths
+        deep_send: list[dict] = []
+        deep_meta: list[tuple[int, int]] = []  # (deep_idx, 原 cands 下标)
+        for deep_send_i, (send_idx, _sc) in enumerate(top_pairs):
+            p = alive_pre[send_idx]
+            ci = p["ci"]
+            deep_send.append({
+                "title": getattr(cands[ci], "title", None),
+                "paths": p["compact"],
+            })
+            deep_meta.append((deep_send_i, ci))
+        try:
+            deep_results = await llm.parse_candidates_deep(
+                deep_send, keyword=keyword, title=title, season=season)
+        except llm.LLMError as e:
+            print(f"[AISearchChain] DEEP PARSE 失败: {e}")
+            return
+
+        # 回填：把 deep_results 的 files 展开到 cands[ci].detail.files
+        for deep_item in deep_results:
+            deep_i = deep_item["index"]
+            if deep_i >= len(deep_meta):
+                continue
+            _si, ci = deep_meta[deep_i]
+            p = pre[ci]
+            pf_by = {pf["ci"]: pf for pf in deep_item.get("files", [])}
+            for compact_i, orig_indices in enumerate(p["mapping"]):
+                pf = pf_by.get(compact_i)
                 if not pf:
                     continue
                 for orig_i in orig_indices:
-                    if orig_i >= len(vf):
+                    if orig_i >= len(p["vf"]):
                         continue
-                    f = vf[orig_i]
+                    f = p["vf"][orig_i]
                     orig_name = os.path.basename(f.get("path") or f.get("name") or "")
                     info = name_parser.parse(orig_name)
                     ai_title = pf.get("title") or info.title or info.title_en
