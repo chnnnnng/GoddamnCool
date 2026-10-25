@@ -181,12 +181,13 @@ class AISearchChain(BaseSearchChain):
                     orig_name = os.path.basename(f.get("path") or f.get("name") or "")
                     info = name_parser.parse(orig_name)
                     ai_title = pf.get("title") or info.title or info.title_en
+                    ai_title_en = pf.get("title_en") or info.title_en
                     ai_season = pf.get("season") if pf.get("season") is not None else info.season
                     ai_episode = pf.get("episode") if pf.get("episode") is not None else info.episode
                     ai_year = pf.get("year") if pf.get("year") is not None else info.year
                     canonical = name_parser.canonical(
-                        info, title=ai_title, season=ai_season,
-                        episode=ai_episode, year=ai_year)
+                        info, title=ai_title, title_en=ai_title_en,
+                        season=ai_season, episode=ai_episode, year=ai_year)
                     f["canonical"] = canonical
                     f["canonical_source"] = "ai"
                     if ai_season is not None:

@@ -181,19 +181,34 @@ class MessyNameParser:
     # ---- 规范文件名 ----
 
     def canonical(self, name: str | ParsedInfo, *, title: str | None = None,
+                  title_en: str | None = None,
                   season: int | None = None, episode: int | None = None,
                   year: int | None = None, style: str = "dot",
                   include_group: bool = True, include_audio: bool = True,
                   include_extras: bool = True) -> str:
         """生成规范文件名。显式参数（任务上下文已知的标题/季集）优先于解析值。
 
-        集数缺失时剧集退化为 Title.S01（整季包）；完全无季集按电影处理。
-        标题内部空格按 style 转换：dot→'.'（推荐，兼容性最好），space→空格。"""
+        title/title_en 同时传时按 en.title 格式（英文 dot 连接 + 中文）；
+        仅一个传时直接用，否则回退到 info.title / info.title_en。"""
         info = name if isinstance(name, ParsedInfo) else self.parse(name)
-        t = (title or info.title or info.title_en or "").strip()
-        if not t:  # 无标题：保留原文件名（无法凭空构造）
+        # 选标题段：优先显式参数
+        cn = title or info.title or ""
+        en = title_en or info.title_en or ""
+        if en and cn:
+            # 中英文都有 → en.title（英文 dot 连接，中文原文）
+            en_dotted = re.sub(r"\s+", ".", en.strip())
+            t = f"{en_dotted}.{cn.strip()}"
+        elif en:
+            t = re.sub(r"\s+", ".", en.strip())
+        elif cn:
+            t = cn.strip()
+        else:
+            t = ""
+        # title 段里只要出现拉丁字母，空格统一 dot 化（如 Cyberpunk Edgerunners 被塞进 info.title 时）
+        if t and re.search(r"[A-Za-z]", t) and style == "dot":
+            t = re.sub(r"\s+", ".", t)
+        if not t:  # 无标题：保留原文件名
             return info.raw
-        t = re.sub(r"\s+", "." if style == "dot" else " ", t)
         parts = [t]
         s = season if season is not None else info.season
         e = episode if episode is not None else info.episode

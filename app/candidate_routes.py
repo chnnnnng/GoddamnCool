@@ -492,6 +492,7 @@ async def candidates_ai_review(request: Request):
                 canonical = name_parser.canonical(
                     info,
                     title=pf.get("title") or info.title or info.title_en,
+                    title_en=pf.get("title_en") or (info.title_en if pf.get("title") else None),
                     season=pf.get("season") if pf.get("season") is not None else info.season,
                     episode=pf.get("episode") if pf.get("episode") is not None else info.episode,
                     year=pf.get("year") if pf.get("year") is not None else info.year,

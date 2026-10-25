@@ -229,7 +229,7 @@ files_sample（部分条真实文件路径样例，展示资源特征）。
 - reason：十分精简的决策考量原因
 """
 
-DEEP_PARSE_SKILL_VERSION = 2
+DEEP_PARSE_SKILL_VERSION = 3
 DEEP_PARSE_SKILL = """你是网盘影视资源文件名解析助手。输入多个选定候选的文件路径数组（已用最长公共前缀压缩为模板），对每一条模板输出结构化元数据。
 
 ## 输入格式
@@ -243,7 +243,8 @@ candidates 是一个 JSON 数组，每个元素含：
 对每个候选按输入顺序（index 即输入 candidates 数组下标）输出 files 数组，
 每一条模板返回：
 - ci: paths 数组下标（0 起，必须严格对应）
-- title: 推断的影片中文名
+- title: 推断的影片中文名（中文段，实在没有则填英文原文）
+- title_en: 推断的影片英文名/拉丁名（从分享标题+路径里识别；如 S01E01/绝命毒师.mp4 填 null；如 Breaking.Bad/绝命毒师/... 填 "Breaking Bad"）
 - season: 季数（整数或 null）
 - episode: 集数（整数或 null；若模板枚举多集可填 null，后端逐枚举项展开）
 - year: 年份（整数或 null）
@@ -255,7 +256,7 @@ candidates 是一个 JSON 数组，每个元素含：
 
 ⚠️ 不要输出 canonical 规范名字符串——服务端自动拼接。
 只输出 JSON，不要其他文字：
-{"items":[{"index":0,"files":[{"ci":0,"title":"绝命毒师","season":1,"episode":null,"year":null,"resolution":"1080p","source":"BDrip","codec":null,"audio":null,"group":"人人影视"}]}]}
+{"items":[{"index":0,"files":[{"ci":0,"title":"绝命毒师","title_en":"Breaking Bad","season":1,"episode":null,"year":null,"resolution":"1080p","source":"BDrip","codec":null,"audio":null,"group":"人人影视"}]}]}
 """
 
 
@@ -373,6 +374,7 @@ async def parse_candidates_deep(
                         "ci": pf_ci,
                         "i": pf_ci,
                         "title": str(pf.get("title") or "").strip()[:100] or None,
+                        "title_en": str(pf.get("title_en") or "").strip()[:100] or None,
                         "season": _int_or_none(pf.get("season")),
                         "episode": _int_or_none(pf.get("episode")),
                         "year": _int_or_none(pf.get("year")),
