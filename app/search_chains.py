@@ -88,18 +88,14 @@ class BaseSearchChain:
         meta, cands, errors, final_kw = await svc.search(
             vtype, id, keyword=keyword, disks=disks, cookie=cookie)
 
-        # ---- 阶段 B：对 alive 候选做普通解析（inspect_share）----
-        # alive_state 为空/None 也视为 alive（非 quark 链接跳过了 verify_links）
+        # ---- 阶段 B：TOP INSPECT_TOP_N alive 候选做 inspect_share ----
+        # 所有 alive 候选（ok/passcode/locked/空）都按匹配度 score 排序取前 N
         alive = [c for c in cands if _is_alive(c)]
-        alive.sort(key=lambda c: -c.score)  # 匹配度降序
+        alive.sort(key=lambda c: -c.score)
         _INSPECT_N = max(3, int(settings.get("INSPECT_TOP_N")
                                 or settings.get("INSPECT_LIMIT")
                                 or config.INSPECT_TOP_N))
-        # inspect_share 是 quark 专属（调用 provider.list_share_files），
-        # 只对 quark 磁盘链接调；非 quark 的候选仍算 alive 但不 inspect
-        quark_alive = [c for c in alive if c.disk == "quark"
-                       and (not c.alive_state or c.alive_state == "ok")]
-        targets = quark_alive[:_INSPECT_N]
+        targets = alive[:_INSPECT_N]  # 不限 disk 类型，匹配度最高的 N 个
         if targets and cookie:
             sem = asyncio.Semaphore(4)
 
@@ -114,11 +110,12 @@ class BaseSearchChain:
             await asyncio.gather(*(_one(c) for c in targets))
 
         # ---- 阶段 C：二次筛选 → 存疑 ----
+        # 只对成功 inspect 到 detail 的 targets 做；没 inspect 或 detail 为空的不动
         _MIN_SIZE_H = float(settings.get("MIN_VIDEO_SIZE_H") or config.MIN_VIDEO_SIZE_H)
         for c in targets:
-            d = getattr(c, "detail", None) or {}
+            d = getattr(c, "detail", None)
             if not d:
-                continue
+                continue  # inspect_share 返回 None/{} → 无法判断，保留 alive
             vc = d.get("video_count", 0) or 0
             ts = _human_size_to_float_h(d.get("total_size_h"))
             if vc == 0:
@@ -128,21 +125,30 @@ class BaseSearchChain:
                 c.alive_state = "uncertain"
                 c.alive_summary = f"内容体积过小（< {_MIN_SIZE_H}GB）"
 
-        # ---- 阶段 D：规格综合分排序 ----
-        alive_final = [c for c in cands if _is_alive(c)]
-        alive_final.sort(key=self._spec_score, reverse=True)
+        # ---- 阶段 D：规格排序 + 未 inspect 保持匹配度顺序 ----
+        # 拆成三批：
+        #   1) inspected_ok → 被 inspect 过 + 通过二次筛选 → 规格综合分排序
+        #   2) uninspected_alive → alive 但没被 inspect 过 → 保持匹配度顺序
+        #   3) uncertain + bad → 放后面
+        inspected_ok = []
+        uninspected_alive = []
+        for c in alive:
+            if getattr(c, "detail", None) and _is_alive(c):
+                inspected_ok.append(c)
+            elif _is_alive(c):
+                uninspected_alive.append(c)
+        inspected_ok.sort(key=self._spec_score, reverse=True)
+        # uninspected_alive 已经是匹配度 score 降序（alive 排好序切片来的）
 
         # ---- 阶段 E：所有候选补规则 canonical ----
         for c in cands:
             self._rule_canonicalize(c, final_kw, getattr(c, "title", "") or "")
 
-        # ---- 阶段 F：最终分档（有效 → 存疑 → 失效）----
+        # ---- 阶段 F：最终分档 ----
         bad = [c for c in cands if c.alive_state in ("bad", "unsupported")]
         uncertain = [c for c in cands if c.alive_state == "uncertain"]
-        # alive_final 已是规格排序结果
-        ordered = alive_final + uncertain + bad
+        ordered = inspected_ok + uninspected_alive + uncertain + bad
 
-        # 保留原 cands 顺序但重组引用
         cands.clear()
         cands.extend(ordered)
         return {"meta": meta, "cands": cands, "errors": errors, "keyword": final_kw}
@@ -202,12 +208,16 @@ class AISearchChain(BaseSearchChain):
         if not llm.configured() or not cands:
             return
 
-        # ---- 0. 从普通链最终的 alive 候选里挑（已按规格排过序）----
-        alive = [c for c in cands if _is_alive(c)]
-        if not alive:
+        # ---- 0. SKIM 只针对"被 inspect 过 + 通过二次筛选"的候选 ----
+        # 普通链已把 inspected_ok 放在最前面（规格综合分排序），
+        # 然后是 uninspected_alive（匹配度顺序），uncertain/bad 在最后。
+        # SKIM 只挑 inspected_ok 那批，uninspected 的不参与 AI 甄选
+        inspected_alive = [c for c in cands
+                           if _is_alive(c) and getattr(c, "detail", None)]
+        if not inspected_alive:
             return
         _SKIM_N = max(3, int(settings.get("LLM_SKIM_TOP_N") or config.LLM_SKIM_TOP_N))
-        alive_top = alive[:_SKIM_N]  # 规格排序后的 TOP N（不是匹配度排序，是规格排序）
+        alive_top = inspected_alive[:_SKIM_N]  # 已是规格排序后的 TOP N
 
         # 预处理：每个候选的 vf / paths / LCP 压缩
         pre: list[dict] = []
