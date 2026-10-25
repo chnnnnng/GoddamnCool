@@ -53,6 +53,8 @@
     roleEl.textContent = meData.role === 'admin' ? '管理员' : '用户';
     roleEl.className = 'badge' + (meData.role === 'admin' ? ' ok' : '');
     roleEl.hidden = false;
+    // 管理员用户在 top bar 显示「管理」入口
+    document.getElementById('btn-admin').hidden = (meData.role !== 'admin');
     var tierEl = document.getElementById('acc-tier');
     tierEl.textContent = meData.tier === 'pro' ? 'Pro' : 'Lite';
     tierEl.className = 'badge' + (meData.tier === 'pro' ? ' ok' : ' warn');

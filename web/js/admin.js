@@ -313,7 +313,6 @@
 
   loadUsers();
   loadConfig();
-  loadIssues();
   loadCache();
   loadStats();
 })();
