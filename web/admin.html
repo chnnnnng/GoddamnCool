@@ -63,6 +63,20 @@
     <button type="button" id="cfg-save">保存配置</button>
   </div>
 
+  <!-- 缓存管理 -->
+  <div class="card">
+    <h1>缓存管理</h1>
+    <p class="meta">搜索结果、LLM AI 精选、TMDB 元数据都走 kv_cache 缓存表。搜索缓存默认 1 天过期，
+      AI 精选 1 天，TMDB 元数据 14 天。修改配置后如果发现结果不对，清一下对应缓存即可。</p>
+    <div id="cache-info" class="meta" style="margin-bottom:10px">加载中…</div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <button type="button" id="cache-clear-all">全部清理</button>
+      <button type="button" id="cache-clear-search">仅清理搜索缓存</button>
+      <button type="button" id="cache-clear-llm">仅清理 LLM 缓存</button>
+      <button type="button" id="cache-clear-tmdb">仅清理 TMDB 缓存</button>
+    </div>
+  </div>
+
   <!-- API 调用统计 -->
   <div class="card">
     <h1>API 调用统计 <span class="badge" id="stats-total" style="margin-left:10px"></span></h1>

@@ -472,6 +472,34 @@ def set_cache(db_path: str, key: str, value, ttl: float) -> None:
         c.execute("DELETE FROM kv_cache WHERE expires_at < ?", (time.time(),))
 
 
+def clear_cache(db_path: str, prefix: str | None = None) -> int:
+    """清 kv_cache 表。prefix=None 全清；否则只清前缀匹配的（如 'search:' / 'llm:'）。"""
+    with _lock, _conn(db_path) as c:
+        if prefix:
+            return c.execute(
+                "DELETE FROM kv_cache WHERE key LIKE ?", (f"{prefix}%",)).rowcount
+        return c.execute("DELETE FROM kv_cache").rowcount
+
+
+def get_cache_info(db_path: str) -> dict:
+    """各前缀缓存条目数（admin 面板展示）。"""
+    out: dict[str, int] = {}
+    with _lock, _conn(db_path) as c:
+        # 按前缀分组统计
+        rows = c.execute(
+            """SELECT CASE
+                      WHEN key LIKE 'search:%' THEN '搜索缓存'
+                      WHEN key LIKE 'llm:%'    THEN 'LLM 缓存'
+                      WHEN key LIKE 'tmdb:%'   THEN 'TMDB 元数据缓存'
+                      ELSE '其他'
+                   END AS grp, COUNT(*) AS n
+                FROM kv_cache
+                GROUP BY grp""").fetchall()
+        for r in rows:
+            out[r["grp"]] = r["n"]
+    return out
+
+
 # ---- API 调用统计（管理员页面展示 PanSou/TMDB/LLM 用量） ----
 
 def record_api_call(db_path: str, *, kind: str, endpoint: str = "",

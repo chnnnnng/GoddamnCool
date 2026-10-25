@@ -235,6 +235,50 @@
 
   document.getElementById('issues-reload').addEventListener('click', loadIssues);
 
+  // ---- 缓存管理 ----
+
+  function renderCacheInfo(data) {
+    var c = data.caches || {};
+    var lines = [];
+    if (!Object.keys(c).length) {
+      lines.push('（无缓存）');
+    } else {
+      Object.keys(c).forEach(function (k) {
+        lines.push(k + '：' + c[k] + ' 条');
+      });
+    }
+    document.getElementById('cache-info').textContent = lines.join('  ·  ');
+  }
+
+  function loadCache() {
+    api('/api/admin/cache-info').then(renderCacheInfo).catch(function () {});
+  }
+
+  function clearCache(prefix, label) {
+    api('/api/admin/cache-clear', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prefix: prefix }),
+    }).then(function (data) {
+      alert(label + '：已清理 ' + data.removed + ' 条');
+      loadCache();
+    }).catch(function (e) { alert('清理失败：' + (e.message || e)); });
+  }
+
+  document.getElementById('cache-clear-all').addEventListener('click', function () {
+    if (!confirm('确定清理**所有**缓存？\n（搜索结果、LLM 精选、TMDB 元数据全部清空）')) return;
+    clearCache(null, '全部缓存');
+  });
+  document.getElementById('cache-clear-search').addEventListener('click', function () {
+    clearCache('search', '搜索缓存');
+  });
+  document.getElementById('cache-clear-llm').addEventListener('click', function () {
+    clearCache('llm', 'LLM 缓存');
+  });
+  document.getElementById('cache-clear-tmdb').addEventListener('click', function () {
+    clearCache('tmdb', 'TMDB 缓存');
+  });
+
   // ---- API 调用统计 ----
 
   var KIND_LABEL = {
@@ -319,5 +363,6 @@
   loadUsers();
   loadConfig();
   loadIssues();
+  loadCache();
   loadStats();
 })();

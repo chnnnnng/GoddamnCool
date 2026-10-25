@@ -197,3 +197,30 @@ async def prune_api_stats(request: Request):
     days = max(1, min(days, 365))
     removed = db.prune_api_calls(config.DB_PATH, keep_days=days)
     return {"removed": removed, "keep_days": days}
+
+
+@router.get("/api/admin/cache-info")
+async def get_cache_info(request: Request):
+    """管理员面板：kv_cache 各类缓存条目数。"""
+    admin, err = require_admin(request)
+    if err:
+        return err
+    return {"caches": db.get_cache_info(config.DB_PATH)}
+
+
+@router.post("/api/admin/cache-clear")
+async def clear_cache(request: Request):
+    """清理缓存。body.prefix 可选（search/llm/tmdb/None 全清）。"""
+    admin, err = require_admin(request)
+    if err:
+        return err
+    try:
+        body = await request.json()
+        prefix = body.get("prefix") if isinstance(body, dict) else None
+    except Exception:
+        prefix = None
+    if prefix not in (None, "search", "llm", "tmdb"):
+        return JSONResponse({"detail": "prefix 可选值：search / llm / tmdb / 空（全清）"},
+                            status_code=400)
+    removed = db.clear_cache(config.DB_PATH, prefix=prefix)
+    return {"removed": removed, "prefix": prefix or "(全部)"}
