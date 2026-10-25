@@ -78,13 +78,23 @@ def load(db_path: str) -> None:
         log.info("运行时配置覆盖: %s", {k: v for k, v in _cache.items()})
 
 
-def get(key: str):
-    """读取配置：DB 覆盖值优先，否则 config 默认值。键必须在白名单内。"""
+def get(key: str, default=None):
+    """读取配置：DB 覆盖值优先，否则 default 参数，否则 config 默认值。键必须在白名单内。"""
     if key not in EDITABLE:
         raise KeyError(f"未知配置项: {key}")
-    if key in _cache:
-        return _cache[key]
-    return getattr(config, key)
+    typ = EDITABLE[key]
+    raw = _cache.get(key, None)
+    if raw is None:
+        return default if default is not None else getattr(config, key)
+    # DB 里存的是字符串，按 EDITABLE 类型转换
+    if typ is bool:
+        if isinstance(raw, bool): return raw
+        return str(raw).strip().lower() in ("1", "true", "yes", "on")
+    if typ is int:
+        return int(raw)
+    if typ is float:
+        return float(raw)
+    return raw
 
 
 def set(db_path: str, updates: dict) -> dict:
@@ -100,6 +110,18 @@ def set(db_path: str, updates: dict) -> dict:
         elif typ is float:
             if isinstance(value, bool) or not isinstance(value, (int, float)):
                 raise ValueError(f"{key} 必须是数字")
+        elif typ is bool:
+            if isinstance(value, bool):
+                pass
+            elif isinstance(value, str):
+                if value.strip().lower() in ("1", "true", "yes", "on"):
+                    value = True
+                elif value.strip().lower() in ("0", "false", "no", "off"):
+                    value = False
+                else:
+                    raise ValueError(f"{key} 布尔值解析失败: {value}")
+            else:
+                raise ValueError(f"{key} 必须是布尔值")
         else:
             if not isinstance(value, str):
                 raise ValueError(f"{key} 必须是字符串")
