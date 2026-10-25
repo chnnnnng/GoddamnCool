@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""TMDB 时延 + 正确性探测脚本（生产环境专用）。
+"""TMDB 时延 + 正确性探测脚本。
 
-自动注入当前可用的 CheckTMDB IP 跳过 DNS 污染；
+走 api.tmdb.org 域名（Cloudflare IPv6，不受境内 api.themoviedb.org DNS 污染影响）；
 同时验证 /search/movie 是否真的不带 imdb_id（修复方向）。
 
-cd /root/workspace && .venv/bin/python scripts/test_tmdb_latency_prod.py
+cd /root/workspace && .venv/bin/python scripts/test_tmdb_latency.py
 """
 import asyncio, statistics, time, os, tempfile, sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -13,18 +13,17 @@ from app import db
 from app.meta.tmdb import TMDBMetaProvider
 
 
-# 当前可用 IP（来源：CheckTMDB github hosts 表；定期刷新）
-# api.themoviedb.org = api.tmdb.org 的别名，走 tmdb.org 的 IP
-PROD_HOST = "13.227.65.62"
+# api.tmdb.org 是 api.themoviedb.org 的别名，走 Cloudflare IPv6 直连，不受 DNS 污染
+DOMAIN_HOST = "api.tmdb.org"
 
 
 async def main():
     p = TMDBMetaProvider()
-    p._host = PROD_HOST
+    p._host = DOMAIN_HOST
     p._host_ts = time.time()
 
     print("=" * 60)
-    print(f"TMDB API 探测 (host={PROD_HOST})")
+    print(f"TMDB API 探测 (host={DOMAIN_HOST})")
     print("=" * 60)
 
     # ======= 1. fetch_meta 正确性 + 缓存 =======

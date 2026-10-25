@@ -50,8 +50,11 @@ def _read_root_file(name: str) -> str:
 
 # 元数据（TMDB）：API key 优先取环境变量，其次项目根目录的 TMDB_API_KEY 文件
 TMDB_API_KEY: str = os.environ.get("TMDB_API_KEY", "") or _read_root_file("TMDB_API_KEY")
-TMDB_BASE = "https://api.themoviedb.org/3"
-TMDB_API_HOST = "api.themoviedb.org"  # IP 直连时的 SNI/Host 头/证书校验域名
+# api.tmdb.org 是 api.themoviedb.org 的别名，但走 Cloudflare IPv6，
+# 不受境内 DNS 污染影响。这是默认 host；走原域名 api.themoviedb.org 时
+# TMDBMetaProvider 会自动降级到 CheckTMDB IP。
+TMDB_BASE = "https://api.tmdb.org/3"
+TMDB_API_HOST = "api.tmdb.org"
 # 双语名/季集缓存有效期（秒）；连载剧集 7 天后自动刷新
 TMDB_META_TTL: float = float(os.environ.get("TMDB_META_TTL", str(7 * 86400)))
 # CheckTMDB（github.com/cnwikee/CheckTMDB）：每日更新的 TMDB 可用 IP hosts 表，

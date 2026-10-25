@@ -68,9 +68,12 @@ class TMDBMetaProvider(MetaProvider):
         try:
             r = await client.get(config.CHECKTMDB_HOSTS_URL)
             r.raise_for_status()
+            # hosts 表里 api.tmdb.org 和 api.themoviedb.org 都有，
+            # 两个域名都要匹配（默认 host=api.tmdb.org，回退时可能用 api.themoviedb.org）
+            known_hosts = {"api.tmdb.org", "api.themoviedb.org", config.TMDB_API_HOST}
             for line in r.text.splitlines():
                 parts = line.split()
-                if len(parts) < 2 or config.TMDB_API_HOST not in parts[1:]:
+                if len(parts) < 2 or not any(h in parts[1:] for h in known_hosts):
                     continue
                 try:
                     ipaddress.ip_address(parts[0])
