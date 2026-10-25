@@ -110,6 +110,9 @@ class AISearchChain(BaseSearchChain):
             detail = getattr(cands[ci], "detail", None) or {}
             detail["ai"] = it
             setattr(cands[ci], "detail", detail)
+            # keep=false 的候选不解析文件名（省 token，后续走规则 canonical）
+            if it.get("keep") is False:
+                continue
             files_by = {pf["ci"]: pf for pf in (it.get("files") or [])}
             for compact_i, orig_indices in enumerate(mapping):
                 pf = files_by.get(compact_i)

@@ -223,7 +223,7 @@ def compact_file_paths(paths: list[str]) -> tuple[list[str], list[list[int]]]:
 
 # ---- AI 精选 + 文件名解析（一次调用完成两项任务） ----
 
-REVIEW_SKILL_VERSION = 4  # v4: 无论 keep true/false 都必须解析所有 files；压缩格式更激进
+REVIEW_SKILL_VERSION = 5  # v5: 仅 keep=true 候选需解析 files（keep=false 候选后端走规则）
 
 REVIEW_SKILL = """你是网盘影视资源搜索结果的甄别与解析助手。根据目标影片信息与候选资源列表，完成两项任务：
 
@@ -233,7 +233,7 @@ REVIEW_SKILL = """你是网盘影视资源搜索结果的甄别与解析助手�
 3. 去重：内容实质相同的候选归为一组，每组仅推荐一个最佳候选（其余标记 dup_of 指向组内最佳的 index）；
 4. 解析：从候选标题中提取影片名（中文优先）、年份、季数。
 
-二、解析文件名（⚠️ 无论 keep=true 还是 keep=false，只要候选输入带 files 数组，就必须逐一解析全部模板！）：
+二、解析文件名（仅对 keep=true 且输入带 files 的候选需要解析；keep=false 的候选不用解析文件名——后端会走规则兜底）：
 files 是合并后的模板路径，常见格式：
   "{{S01/S01E01, S01/S01E02, ..., S05/S05E16}}.中英字幕.BDrip.1080p-人人影视.mp4"
 每一条模板里 {{...}} 枚举了变化部分（季目录 + 集号），后面的固定部分是扩展名+质量标记。
@@ -256,9 +256,8 @@ ci 为该模板在候选 files 数组中的下标。对每个模板返回：
 - score：0~100 整数，被剔除的候选可为 null；
 - dup_of：与哪个候选重复（填对方的 index），自身是组内最佳或无重复时为 null；
 - title/year/season：从候选标题解析，无法判断时为 null；
-- files：仅对输入带 files 的候选输出，且 **无论 keep 是 true 还是 false，都必须逐一覆盖其全部 files 模板**；
-  ci 为该候选的 files 数组下标，不能遗漏；title 字段对无标题文件可尽力给出，
-  其他字段无法判断时为 null。"""
+- files：仅对 keep=true 且输入带 files 的候选输出，必须逐一覆盖其全部 files 模板；
+  keep=false 或输入无 files 的候选，files 字段直接给 [] 即可。"""
 
 
 async def review_candidates(cands: list[dict], *, keyword: str = "",
