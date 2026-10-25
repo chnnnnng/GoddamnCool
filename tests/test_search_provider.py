@@ -2,7 +2,7 @@
 import pytest
 from httpx import AsyncClient, ConnectError, MockTransport, Response, Request
 
-from app.providers.search import PanSouProvider, SearchCandidate, SearchError
+from app.search import PanSouProvider, SearchCandidate, SearchError
 
 PANSOU_BODY = {
     "code": 0, "message": "success",

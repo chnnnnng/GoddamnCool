@@ -17,7 +17,7 @@ from app import db  # noqa: E402
 from app.candidate_service import CandidateService  # noqa: E402
 from app.tmdb import VideoMeta  # noqa: E402
 from app.main import app  # noqa: E402
-from app.providers.search import SearchCandidate, SearchError  # noqa: E402
+from app.search import SearchCandidate, SearchError  # noqa: E402
 
 client = TestClient(app)
 client.__enter__()
