@@ -153,8 +153,8 @@ function buildAliveChips() {
 /* ---- 搜索 ---- */
 let lastKw = '';  // 最近一次搜索关键词（inspect 请求的无标题文件名兜底上下文）
 function updateMainBtn() {
-  /* 主按钮文案（需求第 2 条）：管理员配置 LLM 后替换为【AI 精选】 */
-  if (!btnEl.disabled) btnEl.textContent = llmEnabled ? 'AI 精选' : '搜索';
+  /* 主按钮文案固定【搜索】——后端自动按 llm.configured() 选 AI 链/普通链 */
+  if (!btnEl.disabled) btnEl.textContent = '搜索';
 }
 async function dosearch() {
   const kw = kwEl.value.trim();
@@ -178,24 +178,16 @@ async function dosearch() {
     lastKeyword = data.keyword || kw;
     if (!kw) kwEl.value = lastKeyword;  // 锚定模式自动回填实际使用的关键词
     lastErrors = (data.errors || '').trim();
-    // 新一轮搜索重置 AI 精选状态（结果缓存于服务端，重搜同关键词会命中）
-    aiApplied = false;
-    for (const c of lastCands) delete c.ai;
+    // 新一轮搜索：链已自动选 AISearchChain，AI 结果直接塞在 cands[].ai；
+    // 前端只需检查是否有任意 ai 数据 → 自动开启 AI 排序/徽标显示
+    const anyAi = lastCands.some((c) => c.ai);
+    aiApplied = anyAi;
     llmEnabled = !!data.llm_enabled;
     renderHero();
     renderResults();
     verifyTimer = setTimeout(verifyLinks, 500);
-    if (llmEnabled && lastCands.length) {
-      // AI 精选链条（需求第 2 条）：PanSou 搜索 → AI 精选+解析 →
-      // 用户已有内容匹配（搜索响应已含）→ 显示结果，一键完成
-      btnEl.textContent = 'AI 精选中…';
-      showLoading('AI 精选中…');
-      try {
-        await applyAiReview();
-      } catch (e) {
-        showMsg('AI 精选失败：' + (e.message || e) + '（已展示基础搜索结果）', false);
-      }
-    }
+    // AI 精选已在后端搜索链内自动完成（AISearchChain），结果随搜索响应一次返回；
+    // 前端仅需按 anyAi 自动开启 AI 排序/徽标渲染（上方 aiApplied 已判）
   } catch (e) {
     showMsg('搜索失败：' + (e.message || e), false);
     metaEl.textContent = '';
@@ -227,71 +219,12 @@ async function verifyLinks() {
   } catch { /* 兜底失败保持未检测状态 */ }
 }
 
-/* ---- AI 精选+解析（管理员配置 LLM 后自动执行；结果服务端缓存 1 天） ---- */
+/* ---- AI 精选（后端自动完成，结果随搜索响应一次返回；前端只负责渲染） ---- */
 function aiRank(c) {
   /* AI 排序键：推荐 → 重复组跟随 → 被剔除沉底；同级按推荐分降序 */
   if (!c.ai || c.ai.keep === undefined) return 3;
   if (c.ai.keep === false) return 2;
   return c.ai.dup_of != null ? 1 : 0;
-}
-const AI_VIDEO_RE = /\.(mp4|mkv|avi|mov|wmv|flv|webm|m2ts|ts|mpg|mpeg|rmvb|rm|3gp|m4v|iso)$/i;
-async function applyAiReview() {
-  /* AI 精选+文件名解析一次完成（需求第 3 条）：输入除候选元数据外，
-     附带有效候选的分享内视频文件完整路径（过滤海报/nfo 等噪声省 token，
-     仅文件名不含用户网盘目录）；返回逐文件规范名/季集/合并规格，
-     按发送时的过滤数组回填（pf.i 对应该数组下标）。 */
-  const sent = lastCands.map((c) => {
-    const vf = ((c.detail && c.detail.files) || [])
-      .filter((f) => AI_VIDEO_RE.test((f.path || f.name || '').replace(/\\/g, '/').split('/').pop() || ''))
-      .slice(0, 40);
-    return {
-      cand: {
-        title: c.title, source: c.source, published: c.published,
-        alive_state: c.alive_state,
-        video_count: c.detail ? c.detail.video_count : null,
-        total_size_h: c.detail ? c.detail.total_size_h : '',
-        files: vf.map((f) => ({ path: f.path || f.name })),
-      },
-      files: vf,  // 原对象引用：回填时按过滤后下标定位
-    };
-  });
-  const data = await api('/api/candidates/ai-review', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      keyword: lastKeyword,
-      title: lastMeta ? lastMeta.title : '',
-      season: curSeason,
-      candidates: sent.map((s) => s.cand),
-    }),
-  });
-  const by = {};
-  (data.items || []).forEach((it) => { by[it.index] = it; });
-  lastCands.forEach((c, i) => {
-    const it = by[i];
-    if (!it) return;
-    c.ai = it;
-    if (it.files && it.files.length && sent[i].files.length) {
-      for (const pf of it.files) {
-        const f = sent[i].files[pf.i];
-        if (!f) continue;
-        if (pf.canonical) { f.canonical = pf.canonical; f.canonical_source = 'ai'; }
-        if (pf.season != null) f.season = pf.season;
-        if (pf.episode != null) f.episode = pf.episode;
-        if (pf.spec) f.spec = pf.spec;  // 服务端已合并原名/规范名的规格
-      }
-      const seasons = aggregateSeasons(c.detail);  // 季集已更新，重算聚合
-      if (seasons.length) c.detail.seasons = seasons;
-    }
-  });
-  aiApplied = true;
-  renderResults();
-  if (modalEl.hidden === false && modalCand) {  // 弹窗开着：重渲染应用 AI 结果
-    mbodyEl.textContent = '';
-    mbodyEl.appendChild(renderDetail(modalCand, modalCand.detail));
-  }
-  const kept = (data.items || []).filter((it) => it.keep !== false).length;
-  showMsg(`AI 精选完成：${kept}/${lastCands.length} 个候选被推荐，文件名已智能解析（相同搜索结果 1 天内不重复调用）`, true);
 }
 function aiTip(c) {
   const a = c.ai || {};

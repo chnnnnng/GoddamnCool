@@ -215,20 +215,26 @@ async def candidates_search(request: Request, vtype: str = "movie", id: str = ""
                 1 for f in d["files"] if f.get("exists"))
     if id and meta is None:  # 锚定模式影片元数据失败（独立搜索 meta 恒为 null）
         return JSONResponse({"detail": errors or "影片元数据获取失败"}, status_code=404)
+    cands_out = []
+    for c in cands:
+        detail = c.detail if isinstance(c.detail, dict) else {}
+        ai = detail.pop("ai", None) if detail else None  # 链里 AI 结果平铺到顶层给前端用
+        cands_out.append({
+            "title": c.title, "share_url": c.share_url, "passcode": c.passcode,
+            "source": c.source, "published": c.published,
+            "provider": c.provider, "disk": c.disk, "score": c.score,
+            "alive_state": c.alive_state, "alive_summary": c.alive_summary,
+            "detail": detail,
+            "ai": ai,  # AI 精选结果（SKIM + DEEPPARSE），普通链/LLM 未配置时为 null
+        })
     return {
         "meta": ({"id": meta.id, "title": meta.title, "year": meta.year,
                   "type": meta.type,
                   "backdrop": meta.backdrop_url(),
                   "poster": meta.poster_url()} if meta else None),
         "keyword": keyword,
-        "llm_enabled": llm.configured(),  # AI 精选入口（管理员配置 LLM 后开启）
-        "candidates": [{
-            "title": c.title, "share_url": c.share_url, "passcode": c.passcode,
-            "source": c.source, "published": c.published,
-            "provider": c.provider, "disk": c.disk, "score": c.score,
-            "alive_state": c.alive_state, "alive_summary": c.alive_summary,
-            "detail": c.detail,  # 有效候选的内容摘要（直显）；完整文件列表在 modal 用
-        } for c in cands],
+        "llm_enabled": llm.configured(),
+        "candidates": cands_out,
         "errors": errors,
     }
 
