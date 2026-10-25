@@ -204,9 +204,13 @@ class CandidateService:
                     r = by_url.get(c.share_url) or {}
                     c.alive_state = r.get("state") or "uncertain"
                     c.alive_summary = r.get("summary") or ""
-            # 内容解析（仅"有效"夸克候选）：详情直显 + 无视频文件排除（需求 4/5）
-            await self._enrich_ok(quark, cookie=cookie)
-            self._resort(merged)
+            # 【重要】：不在此处 inspect_share
+            # inspect_share 延后到 chain 里按需调（BaseSearchChain/AISearchChain），
+            # 只对 TOP INSPECT_TOP_N 的 alive 候选做普通解析，节约 RPC。
+            # merged 仍按 score 降序 + 匹配度分档（有效候选自然在前面）。
+            merged.sort(key=lambda c: (2 if c.alive_state in ("bad", "unsupported") else
+                                       1 if c.alive_state == "uncertain" else 0,
+                                       -c.score, -_published_ts(c)))
         log.info("候选搜索 %s kw=%r: %d 关键词 %d 来源 %d 有效候选, 错误: %s",
                  video_id or "(独立搜索)", kw, len(keywords), len(providers),
                  len(merged), errors or "无")

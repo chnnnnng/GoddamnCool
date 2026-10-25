@@ -18,9 +18,9 @@ const DISKS = ['quark', 'all', 'uc', 'baidu', 'aliyun', 'xunlei', '115', '123', 
 const DISK_NAMES = { quark: '夸克', all: '全部', uc: 'UC', baidu: '百度', aliyun: '阿里',
   xunlei: '迅雷', 115: '115', 123: '123', tianyi: '天翼' };
 const ALIVE_FILTERS = [['ok', '有效'], ['locked', '需提取码'], ['bad', '已失效'],
-  ['none', '未检测'], ['all', '全部']];
+  ['none', '存疑'], ['all', '全部']];
 const V_TEXT = { ok: '有效', bad: '已失效', locked: '需提取码', unsupported: '不支持',
-  uncertain: '不确定' };
+  uncertain: '存疑' };
 
 let curDisk = 'quark';
 let curAlive = 'ok';          // 默认仅展示检测"有效"的结果
@@ -359,7 +359,7 @@ function renderCard(c) {
   if (c.published) badges.appendChild(el('span', 'bd', c.published.slice(0, 10)));
   if (c.passcode) badges.appendChild(el('span', 'bd code', `提取码 ${c.passcode}`));
   const v = el('span', 'vstate ' + (c.alive_state ? 'v-' + c.alive_state : 'v-none'),
-    V_TEXT[c.alive_state] || '未检测');
+    V_TEXT[c.alive_state] || '存疑');
   if (c.alive_summary) v.title = c.alive_summary;
   badges.appendChild(v);
   // 网盘中已有同名文件：绿色 badge 紧跟在"有效/已失效"之后

@@ -726,8 +726,10 @@ async def test_search_cache_distinguishes_disks(tmp_db, monkeypatch):
 # ---------- 阶段 7：内容详情直显 + 无视频文件排除 ----------
 
 async def test_search_marks_no_video_content_bad(tmp_db, monkeypatch):
-    """有效链接但内容里没有任何视频文件 → 标记 uncertain（归到'未检测'档，
-    前端不再当有效候选；PanSou 检测为 ok 但内容本身无视频，不该判 bad）。"""
+    """有效链接但内容里没有任何视频文件 → 标记 uncertain（归到'存疑'档）。
+
+    candidate_service.search 现在只做 PanSou + verify_links 初步分档；
+    inspect_share 延后到 BaseSearchChain.search 里按需调（TOP N alive + cookie）。"""
     from app import candidate_service as cs_mod
     from app.providers.base import ShareFile
 
@@ -749,12 +751,23 @@ async def test_search_marks_no_video_content_bad(tmp_db, monkeypatch):
 
     monkeypatch.setattr(cs_mod, "QuarkDriveProvider", FakeProvider)
     svc = cs_mod.CandidateService(db_path=tmp_db)
+    # 直接调 svc.search —— 现在只做 PanSou + verify_links，不调 inspect_share
     m, cands, errs, kw = await svc.search("series", "tt5925192", cookie="c=1")
     target = next(c for c in cands if c.share_url == URL_A)
-    assert target.alive_state == "uncertain"    # 归到未检测档（不是 bad）
-    assert target.alive_summary == "内容无视频文件"
-    assert target.detail is not None
-    ok_any = [c for c in cands if c.alive_state == "ok"]
+    assert target.alive_state == "ok"           # verify_links 过的 → ok
+    assert target.detail is None                # inspect 延后，detail 还没填
+
+    # 通过 BaseSearchChain.search 才会 inspect + 二次筛选
+    from app.search_chains import BaseSearchChain
+    chain = BaseSearchChain()
+    # chain.search 内部用 candidate_service（candidate_routes 里的单例），
+    # 但我们的 FakeProvider 已经 patch 了全局 QuarkDriveProvider
+    result = await chain.search("老友记", vtype="series", id="tt5925192", cookie="c=1")
+    target2 = next(c for c in result["cands"] if c.share_url == URL_A)
+    assert target2.alive_state == "uncertain"   # inspect 后 video_count=0 → 存疑
+    assert target2.alive_summary == "内容无视频文件"
+    assert target2.detail is not None
+    ok_any = [c for c in result["cands"] if c.alive_state == "ok"]
     assert all(c.share_url != URL_A for c in ok_any)
 
 

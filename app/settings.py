@@ -18,7 +18,9 @@ EDITABLE: dict[str, type] = {
     "LITE_DAILY_SEARCH_LIMIT": int, # Lite 用户每日搜索次数上限
     "LITE_DAILY_TRANSFER_LIMIT": int,  # Lite 用户每日转存次数上限
     "SEARCH_LIMIT": int,            # 单次搜索返回候选数上限
-    "INSPECT_LIMIT": int,           # 搜索后解析分享详情的最大条数
+    "INSPECT_LIMIT": int,           # 搜索后解析分享详情的最大条数（兼容旧配置，优先 INSPECT_TOP_N）
+    "INSPECT_TOP_N": int,           # 普通链：TOP N alive 候选做 inspect_share（规格排序前的匹配度排序上取）
+    "MIN_VIDEO_SIZE_H": float,      # 普通链：小于此 GB 数的候选归"存疑"档（0 关闭）
     "SEARCH_CACHE_TTL": int,        # 搜索结果缓存秒数（0 关闭）
     "MATCH_THRESHOLD": float,       # 文件名匹配阈值
     "TRANSFER_DIR": str,            # 转存目标目录名（网盘根目录下）
@@ -45,7 +47,9 @@ SETTINGS_META: dict[str, str] = {
     "LITE_DAILY_SEARCH_LIMIT": "Lite 用户每日搜索次数上限（Pro 不限）",
     "LITE_DAILY_TRANSFER_LIMIT": "Lite 用户每日转存次数上限（Pro 不限）",
     "SEARCH_LIMIT": "单次搜索返回的候选数量上限",
-    "INSPECT_LIMIT": "搜索后自动解析分享内容详情的最大条数",
+    "INSPECT_LIMIT": "（兼容旧配置）搜索后自动解析分享详情的最大条数",
+    "INSPECT_TOP_N": "普通链：TOP N alive 候选做 inspect_share（按匹配度降序取，admin 可配）",
+    "MIN_VIDEO_SIZE_H": "普通链：内容体积小于此 GB 数的候选归「存疑」档（0 关闭体积筛选）",
     "SEARCH_CACHE_TTL": "搜索结果缓存有效期（秒，0 表示关闭缓存）",
     "MATCH_THRESHOLD": "转存时文件名与影片名的匹配阈值（0~1）",
     "TRANSFER_DIR": "默认转存目标目录名（网盘根目录下的文件夹，留空存根目录；用户可在面板自定义）",
@@ -55,7 +59,7 @@ SETTINGS_META: dict[str, str] = {
                     "留空禁用 AI 精选/文件名解析等高级功能）",
     "LLM_API_KEY": "大语言模型 API Key（管理员统一填写，保存后回显打码，普通用户不可见）",
     "LLM_MODEL": "大语言模型名称（如 gpt-4o-mini / qwen-plus / deepseek-chat）",
-    "LLM_SKIM_TOP_N": "AI 精选阶段 1：最多送几个 alive 候选给 AI 做概要甄选（按匹配度降序，默认 15）",
+    "LLM_SKIM_TOP_N": "AI 精选阶段 1：最多送几个 alive 候选给 AI 做概要甄选（按匹配度降序，默认 10）",
     "LLM_DEEP_TOP_N": "AI 精选阶段 2：AI 评分后最多选几个 keep=true 候选做详细文件名解析（默认 3）",
 }
 

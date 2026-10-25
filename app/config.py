@@ -72,6 +72,9 @@ LITE_DAILY_TRANSFER_LIMIT: int = int(os.environ.get("LITE_DAILY_TRANSFER_LIMIT",
 SEARCH_CACHE_TTL: float = float(os.environ.get("SEARCH_CACHE_TTL", str(86400)))
 # 搜索后对"有效"候选做内容解析（详情直显 + 无视频排除）的最大条数
 INSPECT_LIMIT: int = int(os.environ.get("INSPECT_LIMIT", "12"))
+# 新参数（admin 页面可配）：INSPECT_TOP_N 覆盖 INSPECT_LIMIT；MIN_VIDEO_SIZE_H 存疑阈值
+INSPECT_TOP_N: int = int(os.environ.get("INSPECT_TOP_N", os.environ.get("INSPECT_LIMIT", "12")))
+MIN_VIDEO_SIZE_H: float = float(os.environ.get("MIN_VIDEO_SIZE_H", "0.5"))
 
 # 大语言模型（可选高级功能）：OpenAI 兼容 API，管理员在 /admin 在线配置；
 # 三项全部非空才启用（AI 精选/文件名兜底解析），留空自动退回基础功能
@@ -80,7 +83,7 @@ LLM_API_KEY: str = os.environ.get("LLM_API_KEY", "")
 LLM_MODEL: str = os.environ.get("LLM_MODEL", "")
 # AI 两阶段精选参数：SKIM 阶段最多送几个 alive 候选给 AI（按匹配度降序）；
 # DEEP PARSE 阶段最多解析几个 keep=true 候选（按 AI 评分降序）
-LLM_SKIM_TOP_N: int = int(os.environ.get("LLM_SKIM_TOP_N", "15"))
+LLM_SKIM_TOP_N: int = int(os.environ.get("LLM_SKIM_TOP_N", "10"))
 LLM_DEEP_TOP_N: int = int(os.environ.get("LLM_DEEP_TOP_N", "3"))
 
 # 转存 Worker（阶段 4）：目标目录、扫描/轮询节奏、超时与重试上限
