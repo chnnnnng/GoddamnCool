@@ -213,5 +213,10 @@ async def clear_cache(request: Request):
     if prefix not in (None, "search", "tmdb"):
         return JSONResponse({"detail": "prefix 可选值：search / tmdb / 空（全清）"},
                             status_code=400)
-    removed = db.clear_cache(config.DB_PATH, prefix=prefix)
+    if prefix == "search":
+        # "清理搜索缓存" = 清所有搜索相关（普通搜索 + AI 搜索链里的 llm 调用缓存）
+        removed = db.clear_cache(config.DB_PATH, prefix="search:")
+        removed += db.clear_cache(config.DB_PATH, prefix="llm:")
+    else:
+        removed = db.clear_cache(config.DB_PATH, prefix=prefix)
     return {"removed": removed, "prefix": prefix or "(全部)"}

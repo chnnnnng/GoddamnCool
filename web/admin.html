@@ -66,8 +66,9 @@
   <!-- 缓存管理 -->
   <div class="card">
     <h1>缓存管理</h1>
-    <p class="meta">所有搜索结果、AI 增强搜索、TMDB 元数据都走 kv_cache 缓存表。
-      搜索/AI 默认 1 天过期，TMDB 元数据 14 天。修改配置后如发现结果不对，清一下对应缓存即可。</p>
+    <p class="meta">所有搜索结果（含 AI 增强版）、AI 精选调用缓存、TMDB 元数据都走 kv_cache 缓存表。
+      搜索/AI 默认 1 天过期，TMDB 元数据 14 天。「清理搜索缓存」会同时清掉普通搜索结果与 AI 精选调用缓存，
+      下次搜索会重新调 AI；TMDB 元数据单独一个按钮。</p>
     <div id="cache-info" class="meta" style="margin-bottom:10px">加载中…</div>
     <div style="display:flex;gap:8px;flex-wrap:wrap">
       <button type="button" id="cache-clear-all">清理全部缓存</button>
