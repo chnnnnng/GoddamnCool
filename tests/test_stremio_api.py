@@ -74,7 +74,7 @@ def patch_service(monkeypatch, provider, meta_dict):
 
 
 def _meta(d):
-    from app.tmdb import VideoMeta
+    from app.meta.base import VideoMeta
     return VideoMeta(d)
 
 

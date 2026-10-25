@@ -7,7 +7,9 @@ import pytest
 from cryptography.fernet import Fernet
 
 from app import config, db
-import app.tmdb as tmdb_mod
+from app.meta.tmdb import TMDBMetaProvider
+
+provider = TMDBMetaProvider()
 
 FIND_MOVIE_ZH = {"movie_results": [{"id": 24428, "title": "复仇者联盟",
                                     "release_date": "2012-04-25"}], "tv_results": []}
@@ -69,8 +71,8 @@ def meta_env(monkeypatch, tmp_path):
     path = str(tmp_path / "meta.db")
     db.init(path, Fernet.generate_key().decode())
     monkeypatch.setattr(config, "TMDB_API_KEY", "test-key")
-    monkeypatch.setattr(tmdb_mod.tmdb_provider, "_host", "")
-    monkeypatch.setattr(tmdb_mod.tmdb_provider, "_host_ts", 0.0)
+    monkeypatch.setattr(provider, "_host", "")
+    monkeypatch.setattr(provider, "_host_ts", 0.0)
     return path
 
 
@@ -78,7 +80,7 @@ def meta_env(monkeypatch, tmp_path):
 
 async def test_fetch_movie_bilingual(meta_env):
     calls = []
-    m = await tmdb_mod.fetch_meta("tt0848228", "movie", meta_env,
+    m = await provider.fetch_meta("tt0848228", "movie", meta_env,
                                   transport=make_transport(calls))
     assert m.name_zh == "复仇者联盟" and m.name_en == "The Avengers"
     assert m.title == "复仇者联盟" and m.year == 2012 and m.videos == []
@@ -86,7 +88,7 @@ async def test_fetch_movie_bilingual(meta_env):
 
 
 async def test_fetch_tv_episodes(meta_env):
-    m = await tmdb_mod.fetch_meta("tt5925192", "series", meta_env,
+    m = await provider.fetch_meta("tt5925192", "series", meta_env,
                                   transport=make_transport([]))
     assert m.name_zh == "余罪" and m.name_en == "Yu Zui"
     assert [v["episode"] for v in m.videos if v["season"] == 1] == [1, 2]
@@ -98,15 +100,15 @@ async def test_fetch_tv_episodes(meta_env):
 
 async def test_cache_hit_then_expired(meta_env, monkeypatch):
     calls = []
-    m1 = await tmdb_mod.fetch_meta("tt0848228", "movie", meta_env,
+    m1 = await provider.fetch_meta("tt0848228", "movie", meta_env,
                                    transport=make_transport(calls))
     n = len(calls)
-    m2 = await tmdb_mod.fetch_meta("tt0848228", "movie", meta_env,
+    m2 = await provider.fetch_meta("tt0848228", "movie", meta_env,
                                    transport=make_transport(calls))
     assert len(calls) == n  # 命中缓存：TMDB 零请求
     assert m2.title == m1.title
     monkeypatch.setattr(config, "TMDB_META_TTL", 0.0)  # TTL 过期 → 重新查询
-    await tmdb_mod.fetch_meta("tt0848228", "movie", meta_env,
+    await provider.fetch_meta("tt0848228", "movie", meta_env,
                               transport=make_transport(calls))
     assert len(calls) > n
 
@@ -117,7 +119,7 @@ async def test_not_found_returns_none(meta_env):
     def handler(request):
         return httpx.Response(200, json={"movie_results": [], "tv_results": []})
 
-    m = await tmdb_mod.fetch_meta("tt9999999", "movie", meta_env,
+    m = await provider.fetch_meta("tt9999999", "movie", meta_env,
                                   transport=httpx.MockTransport(handler))
     assert m is None
 
@@ -126,7 +128,7 @@ async def test_network_failure_returns_none(meta_env):
     def handler(request):
         raise httpx.ConnectError("boom")
 
-    m = await tmdb_mod.fetch_meta("tt0848228", "movie", meta_env,
+    m = await provider.fetch_meta("tt0848228", "movie", meta_env,
                                   transport=httpx.MockTransport(handler))
     assert m is None
 
@@ -134,7 +136,7 @@ async def test_network_failure_returns_none(meta_env):
 async def test_missing_key_returns_none(meta_env, monkeypatch):
     monkeypatch.setattr(config, "TMDB_API_KEY", "")
     calls = []
-    m = await tmdb_mod.fetch_meta("tt0848228", "movie", meta_env,
+    m = await provider.fetch_meta("tt0848228", "movie", meta_env,
                                   transport=make_transport(calls))
     assert m is None and calls == []  # 不发起任何请求
 
@@ -143,7 +145,7 @@ async def test_missing_key_returns_none(meta_env, monkeypatch):
 
 async def test_domain_direct_no_checktmdb(meta_env):
     calls, hosts = [], []
-    m = await tmdb_mod.fetch_meta("tt0848228", "movie", meta_env,
+    m = await provider.fetch_meta("tt0848228", "movie", meta_env,
                                   transport=make_transport(calls, hosts))
     assert m.title == "复仇者联盟"
     assert "cdn.jsdelivr.net" not in hosts  # 域名可达时不请求 CheckTMDB
@@ -151,20 +153,20 @@ async def test_domain_direct_no_checktmdb(meta_env):
 
 async def test_domain_failure_switches_to_ip(meta_env):
     calls, hosts = [], []
-    m = await tmdb_mod.fetch_meta("tt5925192", "series", meta_env,
+    m = await provider.fetch_meta("tt5925192", "series", meta_env,
                                   transport=make_transport(calls, hosts,
                                                            block_domain=True))
     assert m.name_zh == "余罪" and m.name_en == "Yu Zui"
     assert hosts.count("cdn.jsdelivr.net") >= 1   # 拉取了 CheckTMDB IP 表
     assert hosts.count("18.155.173.7") >= 1       # 后续请求走 IP 直连
-    assert tmdb_mod._host == "18.155.173.7"       # 进程内缓存当前 IP
+    assert provider._host == "18.155.173.7"       # 进程内缓存当前 IP
     assert "/3/tv/60059/season/1" in calls        # 季集请求也走 IP 直连
 
 
 async def test_domain_timeout_also_switches_to_ip(meta_env):
     """DNS 污染常表现为连接超时（ConnectTimeout），同样触发 IP 直连切换。"""
     calls, hosts = [], []
-    m = await tmdb_mod.fetch_meta(
+    m = await provider.fetch_meta(
         "tt0848228", "movie", meta_env,
         transport=make_transport(calls, hosts, block_domain=True,
                                  domain_exc=httpx.ConnectTimeout("超时")))
@@ -174,8 +176,8 @@ async def test_domain_timeout_also_switches_to_ip(meta_env):
 
 async def test_ip_transient_timeout_retried(meta_env, monkeypatch):
     """IP 直连偶发瞬时超时：同一 IP 自动重试一次，不误判为 IP 失效。"""
-    monkeypatch.setattr(tmdb_mod.tmdb_provider, "_host", "18.155.173.7")
-    monkeypatch.setattr(tmdb_mod.tmdb_provider, "_host_ts", time.time())
+    monkeypatch.setattr(provider, "_host", "18.155.173.7")
+    monkeypatch.setattr(provider, "_host_ts", time.time())
     calls, hosts = [], []
     state = {"failed": False}
 
@@ -185,7 +187,7 @@ async def test_ip_transient_timeout_retried(meta_env, monkeypatch):
             raise httpx.ConnectTimeout("瞬时超时")
         return make_transport(calls, hosts).handler(request)
 
-    m = await tmdb_mod.fetch_meta("tt0848228", "movie", meta_env,
+    m = await provider.fetch_meta("tt0848228", "movie", meta_env,
                                   transport=httpx.MockTransport(handler))
     assert m.title == "复仇者联盟"            # 重试后成功
     assert hosts.count("18.155.173.7") >= 2   # 同一 IP 重试
@@ -193,15 +195,15 @@ async def test_ip_transient_timeout_retried(meta_env, monkeypatch):
 
 async def test_stale_ip_refreshed(meta_env, monkeypatch):
     """缓存的 IP 连不上时：重新拉取 CheckTMDB 最新 IP 并换新重试。"""
-    monkeypatch.setattr(tmdb_mod.tmdb_provider, "_host", "9.9.9.9")
-    monkeypatch.setattr(tmdb_mod.tmdb_provider, "_host_ts", time.time())
+    monkeypatch.setattr(provider, "_host", "9.9.9.9")
+    monkeypatch.setattr(provider, "_host_ts", time.time())
     calls, hosts = [], []
-    m = await tmdb_mod.fetch_meta("tt0848228", "movie", meta_env,
+    m = await provider.fetch_meta("tt0848228", "movie", meta_env,
                                   transport=make_transport(calls, hosts,
                                                            dead_ips=("9.9.9.9",)))
     assert m.title == "复仇者联盟"
     assert "9.9.9.9" in hosts                      # 旧 IP 先失败
-    assert tmdb_mod._host == "18.155.173.7"        # 已换新 IP
+    assert provider._host == "18.155.173.7"        # 已换新 IP
 
 
 async def test_fetch_ip_parses_hosts(meta_env):
@@ -214,10 +216,10 @@ async def test_fetch_ip_parses_hosts(meta_env):
         return httpx.Response(200, text=text)
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as c:
-        assert await tmdb_mod._fetch_ip(c) == "18.155.173.7"
+        assert await provider._fetch_ip(c) == "18.155.173.7"
 
     def empty(request):
         return httpx.Response(200, text="# 只有注释，无条目")
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(empty)) as c:
-        assert await tmdb_mod._fetch_ip(c) == ""   # 无条目返回空串
+        assert await provider._fetch_ip(c) == ""   # 无条目返回空串

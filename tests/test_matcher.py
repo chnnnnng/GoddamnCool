@@ -1,5 +1,5 @@
 """MovieMatcher 单元测试（需求第 12 条验收项全覆盖）。"""
-from app.tmdb import VideoMeta
+from app.meta.base import VideoMeta
 from app.matcher import MovieMatcher, parse
 from app.providers.base import CloudFile
 

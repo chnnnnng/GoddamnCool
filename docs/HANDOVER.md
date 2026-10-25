@@ -45,12 +45,10 @@ app/                             # 后端
 ├── auth.py                      # Fernet 密钥、加密 / 解密 Cookie
 ├── llm.py                       # AI 评审配置（API_BASE / API_KEY / MODEL，三项全非空才 configured()）
 │
-├── meta/                        # 元数据源域（新增）
-│   ├── base.py                  # MetaProvider 抽象基类 + VideoMeta 统一数据类
+├── meta/                        # 元数据源域
+│   ├── base.py                  # MetaProvider 抽象 + VideoMeta 统一数据类（含 source_id/source_kind/canonical_id）
 │   ├── tmdb.py                  # TMDBMetaProvider 派生类（IMDb/TMDB ID/关键词三路径 + SQLite 缓存）
 │   └── __init__.py              # get_meta_provider() 工厂（按 settings.META_PROVIDER 选实例）
-├── tmdb.py                      # 薄壳 facade：固定走 tmdb_provider 单例，旧 import 零改动
-│
 ├── search/                      # 搜索域
 │   ├── base.py                  # ResourceSearchProvider / SearchCandidate / SearchError 抽象
 │   ├── pansou.py                # PanSouProvider 实现（PanSou 实例搜索 + /api/check/links）
@@ -140,8 +138,8 @@ BaseSearchChain（普通链）:
 
 AISearchChain（AI 链，在普通链之上叠加）:
   普通链跑完整
-  SKIM  → LLM 概要甄选前 N 条
-  DEEPPARSE → LLM 逐条详细解析 + 规格标注
+  REVIEW(aka SKIM)  → LLM 概要甄选前 N 条
+  DEEPPARSE(aka DEEP) → LLM 逐条详细解析 + 规格标注
   写 kv_cache（1 天 TTL）+ 加 ai_enhanced=True 标记
 ```
 
@@ -183,9 +181,6 @@ VideoMeta(
 # 所有调用方统一走：
 from app.meta import get_meta_provider
 meta = await get_meta_provider().fetch_meta(source_id, vtype, source_kind="imdb")
-
-# 或便捷函数（旧 import 零改动）：
-from app.tmdb import fetch_meta
 ```
 
 **TMDB source_kind 三路径**：

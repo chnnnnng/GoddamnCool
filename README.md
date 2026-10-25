@@ -95,10 +95,9 @@ app/                  # 后端：纯 JSON API + 静态资源服务（前后端�
 ├── db.py              # SQLite：多用户表 + 凭证（Fernet 加密）+ 转存任务 + 缓存 + API 调用统计
 ├── auth.py            # Fernet 密钥、加密 / 解密 Cookie
 ├── meta/              # 元数据源域
-│   ├── base.py        # MetaProvider 抽象 + VideoMeta 统一数据类（含 source_id/source_kind/canonical_id）
-│   ├── tmdb.py        # TMDBMetaProvider 派生类（IMDb/TMDB ID/关键词三路径 + SQLite 缓存）
-│   └── __init__.py    # get_meta_provider() 工厂（按 settings.META_PROVIDER 选实例）
-├── tmdb.py            # 薄壳 facade：固定走 tmdb_provider 单例，旧 import 零改动
+│   ├── base.py        # MetaProvider 抽象 + VideoMeta 统一数据类
+│   ├── tmdb.py        # TMDBMetaProvider 派生类（三路径 + SQLite 缓存）
+│   └── __init__.py    # get_meta_provider() 工厂
 ├── search/            # 搜索域
 │   ├── base.py        # ResourceSearchProvider / SearchCandidate / SearchError
 │   ├── pansou.py      # PanSouProvider（PanSou 自部署实例 + /api/check/links）

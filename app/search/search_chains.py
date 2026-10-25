@@ -139,7 +139,7 @@ class BaseSearchChain:
     @staticmethod
     def _restore(data: dict) -> dict:
         from .search_service import SearchService as _CS, SearchCandidate
-        from ..tmdb import VideoMeta
+        from ..meta.base import VideoMeta
         meta_d = data.get("meta")
         meta = VideoMeta(meta_d) if meta_d else None
         cands = [SearchCandidate(**c) for c in data.get("candidates", [])]

@@ -20,7 +20,7 @@ from app import config, db, settings  # noqa: E402
 from app.matcher import rough_title_match  # noqa: E402
 from app.providers.base import ProviderError  # noqa: E402
 from app.providers.quark import QuarkDriveProvider  # noqa: E402
-from app.tmdb import VideoMeta  # noqa: E402
+from app.meta.base import VideoMeta  # noqa: E402
 import app.transfer_worker as tw  # noqa: E402
 from app.transfer_worker import TransferWorker  # noqa: E402
 

@@ -15,7 +15,7 @@ import app.search_routes as cr  # noqa: E402
 import app.config as config  # noqa: E402
 from app import db  # noqa: E402
 from app.search.search_service import SearchService  # noqa: E402
-from app.tmdb import VideoMeta  # noqa: E402
+from app.meta.base import VideoMeta  # noqa: E402
 from app.main import app  # noqa: E402
 from app.search import SearchCandidate, SearchError  # noqa: E402
 
