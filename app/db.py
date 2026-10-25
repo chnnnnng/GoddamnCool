@@ -51,6 +51,20 @@ def init(db_path: str, secret_key: str) -> None:
                )"""
         )
         c.execute(
+            """CREATE TABLE IF NOT EXISTS api_calls (
+                   id INTEGER PRIMARY KEY AUTOINCREMENT,
+                   kind TEXT NOT NULL,                  -- pansou / tmdb / llm
+                   endpoint TEXT NOT NULL DEFAULT '',   -- 细分：llm.chat / tmdb.movie / pansou.search
+                   duration_ms INTEGER NOT NULL DEFAULT 0,
+                   success INTEGER NOT NULL DEFAULT 1,  -- 1=成功 0=失败
+                   error TEXT NOT NULL DEFAULT '',
+                   meta TEXT NOT NULL DEFAULT '',       -- JSON 附加上下文（model / query 等）
+                   created_at TEXT DEFAULT (datetime('now', 'localtime'))
+               )"""
+        )
+        c.execute("CREATE INDEX IF NOT EXISTS idx_api_calls_kind ON api_calls(kind)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_api_calls_created ON api_calls(created_at)")
+        c.execute(
             """CREATE TABLE IF NOT EXISTS transfer_tasks (
                    id TEXT PRIMARY KEY,               -- uuid4 hex，防猜测遍历
                    video_type TEXT NOT NULL,          -- movie / series
@@ -456,6 +470,94 @@ def set_cache(db_path: str, key: str, value, ttl: float) -> None:
             (key, json.dumps(value, ensure_ascii=False), time.time() + ttl),
         )
         c.execute("DELETE FROM kv_cache WHERE expires_at < ?", (time.time(),))
+
+
+# ---- API 调用统计（管理员页面展示 PanSou/TMDB/LLM 用量） ----
+
+def record_api_call(db_path: str, *, kind: str, endpoint: str = "",
+                    duration_ms: int = 0, success: bool = True,
+                    error: str = "", meta: dict | None = None) -> None:
+    """记录一次外部 API 调用。后台任务，忽略失败（不能让统计影响主流程）。"""
+    try:
+        with _lock, _conn(db_path) as c:
+            c.execute(
+                """INSERT INTO api_calls (kind, endpoint, duration_ms, success, error, meta)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (kind, endpoint, int(duration_ms), 1 if success else 0,
+                 str(error)[:200],
+                 json.dumps(meta or {}, ensure_ascii=False)[:1000]),
+            )
+    except Exception:
+        pass  # 统计失败不影响主流程
+
+
+def get_api_stats(db_path: str) -> dict:
+    """汇总统计（总数 + 成功/失败 + 平均耗时），按 kind 分组。"""
+    out: dict[str, dict] = {}
+    with _lock, _conn(db_path) as c:
+        rows = c.execute(
+            """SELECT kind,
+                      COUNT(*) AS total,
+                      SUM(success) AS ok,
+                      AVG(duration_ms) AS avg_ms,
+                      MAX(duration_ms) AS max_ms,
+                      MIN(duration_ms) AS min_ms
+                 FROM api_calls
+                GROUP BY kind""").fetchall()
+        for r in rows:
+            out[r["kind"]] = {
+                "total": r["total"],
+                "ok": int(r["ok"] or 0),
+                "fail": r["total"] - int(r["ok"] or 0),
+                "avg_ms": round(r["avg_ms"] or 0, 1),
+                "max_ms": int(r["max_ms"] or 0),
+                "min_ms": int(r["min_ms"] or 0),
+            }
+    return out
+
+
+def get_api_stats_daily(db_path: str, days: int = 14) -> dict:
+    """按日 × kind 分组的调用次数（前端图表用）。"""
+    rows: list[dict] = []
+    with _lock, _conn(db_path) as c:
+        raw = c.execute(
+            """SELECT substr(created_at, 1, 10) AS day,
+                      kind,
+                      COUNT(*) AS n,
+                      AVG(duration_ms) AS avg_ms
+                 FROM api_calls
+                WHERE created_at >= datetime('now', 'localtime', ?)
+                GROUP BY day, kind
+                ORDER BY day ASC""",
+            (f"-{days} days",)).fetchall()
+        for r in raw:
+            rows.append({
+                "day": r["day"],
+                "kind": r["kind"],
+                "n": r["n"],
+                "avg_ms": round(r["avg_ms"] or 0, 1),
+            })
+    return {"days": days, "series": rows}
+
+
+def get_api_stats_recent(db_path: str, limit: int = 30) -> list[dict]:
+    """最近 N 条调用记录（管理页查看详情用）。"""
+    with _lock, _conn(db_path) as c:
+        rows = c.execute(
+            """SELECT id, kind, endpoint, duration_ms, success, error, meta, created_at
+                 FROM api_calls
+                ORDER BY id DESC LIMIT ?""",
+            (limit,)).fetchall()
+        return [dict(r) for r in rows]
+
+
+def prune_api_calls(db_path: str, keep_days: int = 30) -> int:
+    """清理 N 天前的旧记录，返回删除数。"""
+    with _lock, _conn(db_path) as c:
+        return c.execute(
+            """DELETE FROM api_calls
+               WHERE created_at < datetime('now', 'localtime', ?)""",
+            (f"-{keep_days} days",)).rowcount
 
 
 # ---- 用户体系（阶段 8：注册/登录/隔离 Cookie/配额/运行时配置） ----

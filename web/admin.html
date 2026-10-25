@@ -63,6 +63,27 @@
     <button type="button" id="cfg-save">保存配置</button>
   </div>
 
+  <!-- API 调用统计 -->
+  <div class="card">
+    <h1>API 调用统计 <span class="badge" id="stats-total" style="margin-left:10px"></span></h1>
+    <p class="meta">PanSou（网盘搜索）、TMDB（元数据）、LLM（AI 精选与文件名解析）三类 API
+      自服务启动以来的累计调用数、成功率与耗时分布。每天 0 点自动清理 30 天前的旧记录。</p>
+    <div id="stats-summary" style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:16px"></div>
+    <details>
+      <summary>最近 30 条调用记录</summary>
+      <div class="tablewrap" style="margin-top:10px">
+        <table>
+          <thead>
+            <tr><th>时间</th><th>类型</th><th>端点</th><th>耗时(ms)</th><th>状态</th><th>详情</th></tr>
+          </thead>
+          <tbody id="stats-recent">
+            <tr><td colspan="6" class="meta">加载中…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </details>
+  </div>
+
   <!-- 名称解析问题 -->
   <div class="card">
     <h1>名称解析问题</h1>

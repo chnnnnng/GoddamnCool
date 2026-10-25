@@ -8,6 +8,7 @@
 """
 import asyncio
 import logging
+import time
 import os
 import re
 from datetime import datetime
@@ -153,11 +154,22 @@ class CandidateService:
             log.info("候选搜索命中缓存 %s", cache_key)
             return meta_c, cands_c, "", cached["kw"]
         tasks = [(p, k) for p in providers for k in keywords]
+        t0_svc = time.monotonic()
         results = await asyncio.gather(
             *(p.search(k, limit=settings.get("SEARCH_LIMIT"), cloud_types=disks)
               for p, k in tasks),
             return_exceptions=True,
         )
+        # 记录每个 provider.search 调用（PanSou 层面）
+        dur_svc_ms = int((time.monotonic() - t0_svc) * 1000)
+        for (p, k), res in zip(tasks, results):
+            ok = not isinstance(res, (SearchError, BaseException))
+            db.record_api_call(self.db_path, kind="pansou", endpoint=f"search.{p.name}",
+                               duration_ms=dur_svc_ms // max(1, len(tasks)),
+                               success=ok,
+                               error=str(res)[:200] if isinstance(res, Exception) else "",
+                               meta={"provider": p.name, "keyword": k[:50],
+                                     "limit": settings.get("SEARCH_LIMIT")})
         candidates: list[SearchCandidate] = []
         errors: list[str] = []
         for (p, k), res in zip(tasks, results):

@@ -235,7 +235,89 @@
 
   document.getElementById('issues-reload').addEventListener('click', loadIssues);
 
+  // ---- API 调用统计 ----
+
+  var KIND_LABEL = {
+    pansou: { label: 'PanSou', desc: '网盘搜索' },
+    tmdb:   { label: 'TMDB',   desc: '元数据查询' },
+    llm:    { label: 'LLM',    desc: 'AI 精选 + 文件名解析' },
+  };
+
+  function renderStats(data) {
+    var sumBox = document.getElementById('stats-summary');
+    sumBox.textContent = '';
+
+    // 总数徽标
+    document.getElementById('stats-total').textContent =
+      '累计 ' + (data.total || 0) + ' 次';
+
+    var kinds = ['pansou', 'tmdb', 'llm'];
+    kinds.forEach(function (k) {
+      var s = (data.summary || {})[k] || { total: 0, ok: 0, fail: 0, avg_ms: 0, max_ms: 0 };
+      var rate = s.total ? Math.round((s.ok / s.total) * 100) : 0;
+      var label = KIND_LABEL[k] || { label: k, desc: '' };
+
+      var card = document.createElement('div');
+      card.style.cssText = 'flex:1;min-width:180px;padding:12px 14px;border:1px solid var(--border,rgba(255,255,255,.1));border-radius:10px;background:rgba(255,255,255,.03);';
+
+      var h4 = document.createElement('div');
+      h4.style.cssText = 'font-size:.78rem;opacity:.6;margin-bottom:4px';
+      h4.textContent = label.label + ' · ' + label.desc;
+      card.appendChild(h4);
+
+      var big = document.createElement('div');
+      big.style.cssText = 'font-size:1.6rem;font-weight:600';
+      big.textContent = s.total;
+      card.appendChild(big);
+
+      var sub = document.createElement('div');
+      sub.style.cssText = 'font-size:.78rem;opacity:.7;margin-top:4px';
+      sub.textContent = '成功率 ' + rate + '%  ·  平均 ' + s.avg_ms + 'ms  ·  失败 ' + s.fail;
+      card.appendChild(sub);
+
+      sumBox.appendChild(card);
+    });
+
+    // 最近 30 条
+    var tbody = document.getElementById('stats-recent');
+    tbody.textContent = '';
+    var recent = data.recent || [];
+    if (!recent.length) {
+      var tr0 = document.createElement('tr');
+      var td0 = document.createElement('td');
+      td0.colSpan = 6;
+      td0.className = 'meta';
+      td0.textContent = '暂无调用记录';
+      tr0.appendChild(td0);
+      tbody.appendChild(tr0);
+    } else {
+      recent.forEach(function (r) {
+        var tr = document.createElement('tr');
+        tr.appendChild(el('td', 'meta', r.created_at || ''));
+        tr.appendChild(el('td', null, (KIND_LABEL[r.kind] || {}).label || r.kind || ''));
+        tr.appendChild(el('td', null, r.endpoint || ''));
+        tr.appendChild(el('td', null, String(r.duration_ms || 0)));
+        tr.appendChild(el('td', r.success ? '' : 'bad', r.success ? '成功' : '失败'));
+        var metaText = '';
+        try { metaText = typeof r.meta === 'string' ? r.meta : JSON.stringify(r.meta || {}); }
+        catch (e) { metaText = ''; }
+        if (r.error) metaText += (metaText ? ' · ' : '') + 'err: ' + r.error;
+        tr.appendChild(el('td', 'meta', metaText.slice(0, 80)));
+        tbody.appendChild(tr);
+      });
+    }
+  }
+
+  function loadStats() {
+    api('/api/admin/api-stats')
+      .then(renderStats)
+      .catch(function (e) {
+        document.getElementById('stats-total').textContent = '加载失败';
+      });
+  }
+
   loadUsers();
   loadConfig();
   loadIssues();
+  loadStats();
 })();

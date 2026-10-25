@@ -118,6 +118,7 @@ async def fetch_meta(imdb_id: str, vtype: str, db_path: str | None = None,
 
     API Key 由管理员在 /admin 配置页填写（settings），缺省回退服务端
     环境变量/根目录 TMDB_API_KEY 文件。"""
+    import time as _time
     path = db_path or config.DB_PATH
     cached = db.get_tmdb_meta(path, imdb_id, vtype, ttl=config.TMDB_META_TTL)
     if cached:
@@ -126,6 +127,8 @@ async def fetch_meta(imdb_id: str, vtype: str, db_path: str | None = None,
     if not key:
         log.error("TMDB_API_KEY 未配置（请管理员在 /admin 配置页填写，或设置环境变量）")
         return None
+    t0 = _time.monotonic()
+    meta_rec = {"imdb_id": imdb_id, "vtype": vtype}
     try:
         async with httpx.AsyncClient(timeout=10, transport=transport,
                                      params={"api_key": key}) as client:
@@ -148,8 +151,15 @@ async def fetch_meta(imdb_id: str, vtype: str, db_path: str | None = None,
                     "name_zh": name_zh, "name_en": name_en,
                     "releaseInfo": date[:4], "videos": videos}
         db.save_tmdb_meta(path, imdb_id, vtype, data)
+        dur_ms = int((_time.monotonic() - t0) * 1000)
+        db.record_api_call(path, kind="tmdb", endpoint=f"fetch_meta.{vtype}",
+                           duration_ms=dur_ms, success=True, meta=meta_rec)
         return VideoMeta(data)
-    except Exception:
+    except Exception as e:
+        dur_ms = int((_time.monotonic() - t0) * 1000)
+        db.record_api_call(path, kind="tmdb", endpoint=f"fetch_meta.{vtype}",
+                           duration_ms=dur_ms, success=False,
+                           error=str(e)[:200], meta=meta_rec)
         log.warning("TMDB 查询失败: %s %s", vtype, imdb_id, exc_info=True)
         return None
 

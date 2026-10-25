@@ -67,24 +67,48 @@ def _chat_payload(model: str, messages: list[dict], temperature: float) -> dict:
 
 async def chat(messages: list[dict], *, temperature: float = 0.2) -> str:
     """调用 OpenAI 兼容 chat completions，返回首条回复文本。"""
+    import time as _time
     base = settings.get("LLM_API_BASE").strip().rstrip("/")
     url = f"{base}/chat/completions"
     payload = _chat_payload(settings.get("LLM_MODEL").strip(), messages,
                             temperature)
     headers = {"Authorization": f"Bearer {settings.get('LLM_API_KEY').strip()}"}
+    t0 = _time.monotonic()
+    model = settings.get("LLM_MODEL").strip() or ""
     try:
         async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
             resp = await client.post(url, json=payload, headers=headers)
     except httpx.HTTPError as e:
+        dur_ms = int((_time.monotonic() - t0) * 1000)
+        db.record_api_call(config.DB_PATH, kind="llm", endpoint="chat",
+                           duration_ms=dur_ms, success=False,
+                           error=str(e)[:200], meta={"model": model})
         raise LLMError(f"请求失败: {e}") from e
     if resp.status_code != 200:
+        dur_ms = int((_time.monotonic() - t0) * 1000)
+        db.record_api_call(config.DB_PATH, kind="llm", endpoint="chat",
+                           duration_ms=dur_ms, success=False,
+                           error=f"HTTP {resp.status_code}",
+                           meta={"model": model})
         raise LLMError(f"HTTP {resp.status_code}: {resp.text[:200]}")
     try:
         content = resp.json()["choices"][0]["message"]["content"]
     except (ValueError, KeyError, IndexError, TypeError) as e:
+        dur_ms = int((_time.monotonic() - t0) * 1000)
+        db.record_api_call(config.DB_PATH, kind="llm", endpoint="chat",
+                           duration_ms=dur_ms, success=False,
+                           error=str(e), meta={"model": model})
         raise LLMError(f"响应格式异常: {e}") from e
     if not (content or "").strip():
+        dur_ms = int((_time.monotonic() - t0) * 1000)
+        db.record_api_call(config.DB_PATH, kind="llm", endpoint="chat",
+                           duration_ms=dur_ms, success=False,
+                           error="模型返回为空", meta={"model": model})
         raise LLMError("模型返回为空")
+    dur_ms = int((_time.monotonic() - t0) * 1000)
+    db.record_api_call(config.DB_PATH, kind="llm", endpoint="chat",
+                       duration_ms=dur_ms, success=True,
+                       meta={"model": model})
     return content
 
 

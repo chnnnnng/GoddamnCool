@@ -8,6 +8,7 @@ from fastapi.responses import JSONResponse
 
 from . import config, db, settings
 from . import llm
+from .db import prune_api_calls  # noqa: F401  (供 admin 端点调用)
 from .auth import hash_password, new_stream_token, require_admin
 
 router = APIRouter()
@@ -157,3 +158,42 @@ async def set_config(request: Request):
     except ValueError as e:
         return JSONResponse({"detail": str(e)}, status_code=400)
     return {"ok": True, "config": config_data}
+
+
+@router.get("/api/admin/api-stats")
+async def get_api_stats(request: Request):
+    """管理员面板：PanSou / TMDB / LLM 三类 API 调用统计。"""
+    admin, err = require_admin(request)
+    if err:
+        return err
+    summary = db.get_api_stats(config.DB_PATH)
+    daily = db.get_api_stats_daily(config.DB_PATH, days=14)
+    recent = db.get_api_stats_recent(config.DB_PATH, limit=30)
+    # 总汇总
+    total = sum(s["total"] for s in summary.values())
+    total_ok = sum(s["ok"] for s in summary.values())
+    return {
+        "total": total,
+        "total_ok": total_ok,
+        "total_fail": total - total_ok,
+        "summary": summary,
+        "daily": daily,
+        "recent": recent,
+    }
+
+
+@router.post("/api/admin/api-stats/prune")
+async def prune_api_stats(request: Request):
+    """清理旧 API 调用记录（默认保留 30 天）。"""
+    admin, err = require_admin(request)
+    if err:
+        return err
+    days = 30
+    try:
+        body = await request.json()
+        days = int(body.get("keep_days", 30))
+    except Exception:
+        pass
+    days = max(1, min(days, 365))
+    removed = db.prune_api_calls(config.DB_PATH, keep_days=days)
+    return {"removed": removed, "keep_days": days}
