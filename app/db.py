@@ -567,7 +567,7 @@ def record_api_call(db_path: str, *, kind: str, endpoint: str = "",
     try:
         from . import settings as _stg, config as _cfg
         _details = bool(_stg.get("API_LOG_DETAILS", default=_cfg.API_LOG_DETAILS))
-        _max_len = int(_stg.get("API_LOG_MAX_LEN") or _cfg.API_LOG_MAX_LEN or 0)
+        _max_len = int(_cfg.API_LOG_MAX_LEN or 0)
     except Exception:
         _details = False
         _max_len = 0

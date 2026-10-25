@@ -374,10 +374,12 @@ function appendDetailSummary(card, d) {
   for (const s of (d.seasons || [])) chips.appendChild(el('span', 'seaschip', seasonChip(s)));
   for (const t of aggregateSpec(d)) chips.appendChild(el('span', 'seaschip', t));
   if (chips.children.length) card.appendChild(chips);
-  const sum = el('div', 'dsum',
-    `视频 ${d.video_count} 个 · 共 ${d.total_size_h}` +
-    (d.other_count ? ` · 其他文件 ${d.other_count} 个` : ''));
-  card.appendChild(sum);
+  const vc = d.video_count, sz = d.total_size_h;
+  const sumParts = [];
+  if (vc != null) sumParts.push(`视频 ${vc} 个`);
+  if (sz != null && sz !== '') sumParts.push(`共 ${sz}`);
+  if (d.other_count) sumParts.push(`其他文件 ${d.other_count} 个`);
+  if (sumParts.length) card.appendChild(el('div', 'dsum', sumParts.join(' · ')));
 }
 
 /* ---- 查看内容弹窗 ---- */
@@ -451,9 +453,12 @@ function renderDetail(c, d) {
   for (const s of (d.seasons || [])) chips.appendChild(el('span', 'seaschip', seasonChip(s)));
   for (const t of aggregateSpec(d)) chips.appendChild(el('span', 'seaschip', t));
   if (chips.children.length) wrap.appendChild(chips);
-  wrap.appendChild(el('div', 'dsum',
-  `视频 ${d.video_count} 个 · 共 ${d.total_size_h}` +
-  (d.other_count ? ` · 其他文件 ${d.other_count} 个` : '')));
+  const vc2 = d.video_count, sz2 = d.total_size_h;
+  const sumParts2 = [];
+  if (vc2 != null) sumParts2.push(`视频 ${vc2} 个`);
+  if (sz2 != null && sz2 !== '') sumParts2.push(`共 ${sz2}`);
+  if (d.other_count) sumParts2.push(`其他文件 ${d.other_count} 个`);
+  if (sumParts2.length) wrap.appendChild(el('div', 'dsum', sumParts2.join(' · ')));
 
   /* 按钮：
      - 独立【转存全部剧集】按钮：仅多视频时显示，无需手动全选；

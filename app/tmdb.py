@@ -196,6 +196,86 @@ async def fetch_meta(imdb_id: str, vtype: str, db_path: str | None = None,
         return None
 
 
+async def fetch_meta_by_keyword(keyword: str, vtype: str,
+                                db_path: str | None = None) -> tuple[VideoMeta | None, str]:
+    """独立搜索用：按关键词去 TMDB search 端点匹配 → 拿到首条结果的 imdb_id →
+    再调 fetch_meta 取完整 hero 图/双语片名。返回 (meta, imdb_id)，匹配不到返回 (None, '')。
+
+    vtype='movie' → /search/movie；vtype='series'/'tv' → /search/tv。"""
+    import time as _time
+    path = db_path or config.DB_PATH
+    key = settings.get("TMDB_API_KEY")
+    if not key:
+        return None, ""
+    kw = keyword.strip()
+    if not kw:
+        return None, ""
+
+    # 关键词搜索缓存（TMDB search 端点结果不稳定，TTL 短一些）
+    _CACHE_KEY = f"kw:{vtype}:{kw.lower()}"
+    _KW_TTL = 3 * 86400
+    cached = db.get_tmdb_meta(path, _CACHE_KEY, vtype, ttl=_KW_TTL)
+    if cached:
+        saved_imdb = cached.get("imdb_id") or ""
+        if saved_imdb:
+            video_meta = await fetch_meta(saved_imdb, vtype, path)
+            if video_meta:
+                return video_meta, saved_imdb
+        # 缓存里没有 imdb_id → 重跑搜索
+        return None, ""
+
+    t0 = _time.monotonic()
+    try:
+        async with httpx.AsyncClient(timeout=10, params={"api_key": key}) as client:
+            search_path = "/search/movie" if vtype == "movie" else "/search/tv"
+            r = await _api_get(client, search_path, {
+                "query": kw,
+                "language": _LANG_ZH,
+                "include_adult": "false",
+                "page": 1,
+            })
+            r.raise_for_status()
+            results = (r.json().get("results") or [])
+            if not results:
+                db.save_tmdb_meta(path, _CACHE_KEY, vtype, {"imdb_id": ""})
+                return None, ""
+            top = results[0]
+            tmdb_id = top.get("id")
+            if not tmdb_id:
+                return None, ""
+
+            # 取 imdb_id（movie 有直接字段，tv 得去详情页）
+            imdb_id = top.get("imdb_id") or ""
+            if not imdb_id and vtype != "movie":
+                r2 = await _api_get(client, f"/tv/{tmdb_id}/external_ids")
+                r2.raise_for_status()
+                imdb_id = (r2.json().get("imdb_id") or "").strip()
+
+            dur_ms = int((_time.monotonic() - t0) * 1000)
+            db.record_api_call(path, kind="tmdb",
+                               endpoint=f"search.{vtype}",
+                               duration_ms=dur_ms, success=True,
+                               meta={"keyword": kw, "tmdb_id": tmdb_id,
+                                     "imdb_id": imdb_id})
+            if not imdb_id:
+                db.save_tmdb_meta(path, _CACHE_KEY, vtype, {"imdb_id": ""})
+                return None, ""
+
+            # 写关键词缓存 → 下次同关键词直接命中
+            db.save_tmdb_meta(path, _CACHE_KEY, vtype, {"imdb_id": imdb_id})
+
+            # 再调 fetch_meta 拿完整 hero 图（带缓存）
+            video_meta = await fetch_meta(imdb_id, vtype, path)
+            return video_meta, imdb_id
+    except Exception as e:
+        log.warning("TMDB 关键词搜索失败: %s %s", vtype, kw, exc_info=True)
+        db.record_api_call(path, kind="tmdb", endpoint=f"search.{vtype}",
+                           duration_ms=int((_time.monotonic() - t0) * 1000),
+                           success=False, error=str(e)[:500],
+                           meta={"keyword": kw})
+        return None, ""
+
+
 async def _find(client: httpx.AsyncClient, imdb_id: str, language: str) -> dict:
     r = await _api_get(client, f"/find/{imdb_id}",
                        {"external_source": "imdb_id", "language": language})

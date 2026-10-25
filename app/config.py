@@ -89,8 +89,8 @@ LLM_DEEPPARSE_TOP_N: int = int(os.environ.get("LLM_DEEPPARSE_TOP_N", "3"))
 # API 调用详细日志（admin 查看完整 request/response 时用）
 # False=关闭, meta 只存 kind/endpoint/success 等基础字段；True=存完整 prompt+response 摘要
 API_LOG_DETAILS: bool = os.environ.get("API_LOG_DETAILS", "false").lower() in ("1", "true", "yes", "on")
-# 开启详细日志时，单次请求/响应各截断到 N 字符（0=不截断；默认 8000 够看完整 DEEPPARSE prompt）
-API_LOG_MAX_LEN: int = int(os.environ.get("API_LOG_MAX_LEN", "8000"))
+# 开启详细日志时，单次请求/响应各截断到 N 字符（0=不截断；内部常量，admin 不可调）
+API_LOG_MAX_LEN: int = int(os.environ.get("API_LOG_MAX_LEN", "20000"))
 
 # 转存 Worker（阶段 4）：目标目录、扫描/轮询节奏、超时与重试上限
 TRANSFER_DIR: str = os.environ.get("TRANSFER_DIR", "GODDAMNCOOL")

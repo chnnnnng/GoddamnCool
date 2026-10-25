@@ -16,7 +16,7 @@ from difflib import SequenceMatcher
 
 from . import config, db, settings
 from .name_parser import parser as name_parser, spec_dict
-from .tmdb import VideoMeta, fetch_meta
+from .tmdb import VideoMeta, fetch_meta, fetch_meta_by_keyword
 from .stream_service import parse_video_id
 from .matcher import JUNK_PATTERN, VIDEO_EXTS
 from .providers.base import ProviderError
@@ -127,7 +127,11 @@ class CandidateService:
         组装响应时实时补算。
         """
         imdb_id, season, _ = parse_video_id(video_id or "")
-        meta = await fetch_meta(imdb_id, vtype, self.db_path) if imdb_id else None
+        if imdb_id:
+            meta = await fetch_meta(imdb_id, vtype, self.db_path)
+        else:
+            # 独立搜索：用关键词去 TMDB 匹配 imdb_id + hero 图
+            meta, imdb_id = await fetch_meta_by_keyword(keyword, vtype, self.db_path)
         if imdb_id and (meta is None or not meta.title):
             return None, [], f"TMDB 未收录 {video_id}", keyword
         names = [keyword.strip()] + ([meta.name_zh, meta.name_en] if meta else [])
