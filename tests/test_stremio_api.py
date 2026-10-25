@@ -345,3 +345,181 @@ def test_spec_emoji_line_minimal():
     assert ss._spec_emoji_line(ss.name_parser.parse("余罪.S01E01.mp4")) == ""
     line = ss._spec_emoji_line(ss.name_parser.parse("Show.1080p.mkv"))
     assert line == "🎬 1080p"
+
+
+# ---------- file_index 快路径（阶段新功能：O(1) 后续命中）----------
+
+async def test_file_index_fast_path_after_matcher_hit(monkeypatch):
+    """第一次 matcher 命中 → 写入 file_index；第二次同一请求 →
+    直接走 file_index 快路径，完全不触发网盘搜索。"""
+    files = [CloudFile(fid="f-movie", name="The.Avengers.2012.1080p.mkv",
+                       size=2048, is_dir=False)]
+    provider = FakeProvider(files)
+    svc = patch_service(monkeypatch, provider,
+                        {"imdb_id": "tt0848228", "name": "The Avengers",
+                         "type": "movie", "releaseInfo": "2012"})
+    search_count_before = provider.search_files  # FakeProvider 无计数，用 fid 代
+
+    # 第一次：走 matcher 路径
+    streams1, status1 = await svc.get_streams("movie", "tt0848228", cookie="cookie")
+    assert len(streams1) == 1
+    assert status1.startswith("标题相似度")
+
+    # 验证 file_index 已写入
+    from app import db as db_mod
+    idx = db_mod.get_file_index(svc.db_path, user_id="",
+                                imdb_id="tt0848228", vtype="movie",
+                                season=None, episode=None)
+    assert idx is not None
+    assert idx["fid"] == "f-movie"
+    assert idx["filename"] == "The.Avengers.2012.1080p.mkv"
+    assert idx["source"] == "matcher"
+
+    # 第二次：file_index 快路径 → FakeProvider.search_files 不会被调
+    # （但 FakeProvider.search_files 没抛异常，所以我们用 monkeypatch 记录调用次数）
+    provider.search_files.__func__
+    call_log = {"n": 0}
+    orig_search = provider.search_files
+
+    async def counting_search(*a, **k):
+        call_log["n"] += 1
+        return await orig_search(*a, **k)
+
+    provider.search_files = counting_search
+
+    streams2, status2 = await svc.get_streams("movie", "tt0848228", cookie="cookie")
+    assert len(streams2) == 1
+    assert status2 == "file_index 快路径命中"
+    # 快路径不触发网盘搜索（但我们的 get_play_resource 仍然会被调一次）
+    assert call_log["n"] == 0
+
+    # 第三次：已在 file_index，依然快路径
+    idx_hit = db_mod.get_file_index(svc.db_path, user_id="",
+                                    imdb_id="tt0848228", vtype="movie",
+                                    season=None, episode=None)
+    assert idx_hit is not None  # 已存在
+
+
+async def test_file_index_written_on_task_path(monkeypatch):
+    """从 transfer_task 直接路径命中后也写 file_index，后续同一请求 O(1) 命中。"""
+    provider = FakeProvider([])  # 网盘什么都搜不到（确认不会走 matcher 路径）
+    svc = patch_service(monkeypatch, provider,
+                        {"imdb_id": "tt0848228", "name": "The Avengers",
+                         "type": "movie", "releaseInfo": "2012"})
+    from app import db as db_mod
+    db_mod.create_task(svc.db_path, vtype="movie", imdb_id="tt0848228",
+                       season=None, episode=None, title="The Avengers",
+                       candidate_title="The Avengers",
+                       share_url="https://pan.quark.cn/s/x",
+                       mode="episode")
+    t = db_mod.get_tasks_for_video(svc.db_path, "movie", "tt0848228", None, None)[0]
+    db_mod.update_task_status(svc.db_path, t["id"], "COMPLETED")
+    db_mod.set_task_fields(svc.db_path, t["id"], target_fid="f-target",
+                           result_json='{"name":"The.Avengers.2012.mkv"}')
+
+    # 第一次：transfer_task 直接路径
+    s1, status1 = await svc.get_streams("movie", "tt0848228", cookie="cookie")
+    assert len(s1) == 1
+    assert status1 == "转存任务已定位该文件"
+
+    # file_index 已写入
+    idx = db_mod.get_file_index(svc.db_path, user_id="",
+                                imdb_id="tt0848228", vtype="movie",
+                                season=None, episode=None)
+    assert idx is not None
+    assert idx["fid"] == "f-target"
+    assert idx["source"] == "task"
+
+    # 第二次：file_index 快路径
+    s2, status2 = await svc.get_streams("movie", "tt0848228", cookie="cookie")
+    assert len(s2) == 1
+    assert status2 == "file_index 快路径命中"
+
+
+async def test_file_index_fid_stale_falls_back(monkeypatch):
+    """file_index 命中但 fid 已失效（Cookie 变更）→ ProviderError →
+    自动 fallback 到 transfer_task / matcher 路径，不卡死。"""
+    files = [CloudFile(fid="f-live", name="Show.2024.mkv", size=100, is_dir=False)]
+    provider = FakeProvider(files)
+    svc = patch_service(monkeypatch, provider,
+                        {"imdb_id": "tt0848228", "name": "Show",
+                         "type": "movie", "releaseInfo": "2024"})
+    from app import db as db_mod
+
+    # 预先塞一个过期 fid
+    db_mod.upsert_file_index(svc.db_path, user_id="", imdb_id="tt0848228",
+                             vtype="movie", season=None, episode=None,
+                             fid="f-dead", filename="dead.mkv", source="matcher")
+
+    # 让 get_play_resource 对 f-dead 抛 ProviderError，对 f-live 正常
+    orig_play = provider.get_play_resource
+
+    async def smart_play(file):
+        if file.fid == "f-dead":
+            from app.providers.base import ProviderError
+            raise ProviderError("fid expired")
+        return await orig_play(file)
+
+    provider.get_play_resource = smart_play
+
+    s, status = await svc.get_streams("movie", "tt0848228", cookie="cookie")
+    # 应该 fallback 到 matcher 路径命中 f-live
+    assert len(s) == 1
+    assert status.startswith("标题相似度")
+
+
+async def test_delete_file_index_on_cookie_reset(monkeypatch):
+    """delete_file_index_for_user 清掉某用户全部快路径缓存。"""
+    from app import db as db_mod
+    svc = patch_service(monkeypatch, FakeProvider([]),
+                        {"imdb_id": "tt0848228", "name": "Show",
+                         "type": "movie", "releaseInfo": "2024"})
+    db_mod.upsert_file_index(svc.db_path, user_id="u1", imdb_id="tt0848228",
+                             vtype="movie", season=None, episode=None,
+                             fid="f1", filename="s.mkv", source="matcher")
+    db_mod.upsert_file_index(svc.db_path, user_id="u2", imdb_id="tt0848228",
+                             vtype="movie", season=None, episode=None,
+                             fid="f2", filename="s.mkv", source="matcher")
+    # SQLite 没 count(*) 直接查，用 delete 结果数
+    n = db_mod.delete_file_index_for_user(svc.db_path, "u1")
+    assert n >= 1
+    # u2 还在
+    assert db_mod.get_file_index(svc.db_path, user_id="u2",
+                                 imdb_id="tt0848228", vtype="movie",
+                                 season=None, episode=None) is not None
+    # u1 已清
+    assert db_mod.get_file_index(svc.db_path, user_id="u1",
+                                 imdb_id="tt0848228", vtype="movie",
+                                 season=None, episode=None) is None
+
+
+async def test_transfer_task_direct_path_bypasses_search(monkeypatch):
+    """transfer_task 直接路径完全不调网盘搜索（验证架构改造核心收益）。"""
+    provider = FakeProvider([])
+    call_log = {"n": 0}
+    orig_search = provider.search_files
+
+    async def counting(*a, **k):
+        call_log["n"] += 1
+        return await orig_search(*a, **k)
+
+    provider.search_files = counting
+    svc = patch_service(monkeypatch, provider,
+                        {"imdb_id": "tt5925192", "name": "余罪",
+                         "type": "series", "releaseInfo": "2016"})
+    from app import db as db_mod
+    db_mod.create_task(svc.db_path, vtype="series", imdb_id="tt5925192",
+                       season=1, episode=1, title="余罪",
+                       candidate_title="余罪S1",
+                       share_url="https://pan.quark.cn/s/x",
+                       mode="episode")
+    t = db_mod.get_tasks_for_video(svc.db_path, "series", "tt5925192", 1, 1)[0]
+    db_mod.update_task_status(svc.db_path, t["id"], "COMPLETED")
+    db_mod.set_task_fields(svc.db_path, t["id"], target_fid="f-direct",
+                           result_json='{"name":"Yu.Zui.S01E01.2016.mkv"}')
+
+    s, status = await svc.get_streams("series", "tt5925192:1:1", cookie="cookie")
+    assert len(s) == 1
+    assert status == "转存任务已定位该文件"
+    # 关键验证：完全没调网盘搜索
+    assert call_log["n"] == 0

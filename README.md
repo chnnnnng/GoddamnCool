@@ -299,6 +299,12 @@ PanSou 无鉴权，任何人可用此实例搜索（响应为 KB 级 JSON，流�
     仍会为它们生成副本，需自行清理；副本文件名（`06(1).mkv`）无法被季集解析，但同名单
     原件仍在，播放定位不受影响。
     手动在网盘中重复转存同样会产生副本。
+11. **TV 端（Nuvio）Cookie 编码问题**：夸克 CDN 要求 Cookie 中的 base64 字符 `+` 原样传递，
+    但 Nuvio 客户端会对 `behaviorHints.proxyHeaders` 里的 Cookie 值做 URL 解码，把 `+` 变成
+    空格，导致 `Video-Auth` 失效、CDN 返回 412。服务端按请求 UA 区分客户端：TV 端（UA 含
+    `nuvio`/`android tv`）预编码 `+`→`%2B`，Nuvio 解码后还原为 `+`；PC 端（okhttp）保持
+    原始 `+`。同时存储的 Cookie 中若含 `%2B` 会先还原为 `+`（CDN 只认 `+` 不认 `%2B`）。
+    详见 [docs/HANDOVER.md §13 TV 端 Cookie 编码踩坑](docs/HANDOVER.md)。
 
 ### 客户端直连测速
 

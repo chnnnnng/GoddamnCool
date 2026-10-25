@@ -139,12 +139,15 @@ class QuarkDriveProvider(CloudDriveProvider):
             data = await self._request("POST", "/file/v2/play", json={"fid": file.fid})
             entry = self._pick_play_entry(data)
             if entry:
+                # play API 返回的 data.size 即原文件大小，优先用它
+                # （file_index / transfer_task 路径构造的 CloudFile size 可能为 0）
+                video_size = int(data.get("size") or 0) or file.size
                 return PlayResource(
                     url=entry["video_info"]["url"],
                     headers={"Cookie": self._cookie, "Referer": REFERER, "User-Agent": USER_AGENT},
                     fid=file.fid,
                     filename=file.name,
-                    video_size=file.size,
+                    video_size=video_size,
                     source_name=self.name,
                 )
             log.warning("播放接口无可用条目，回退下载直链: %s", file.name)
@@ -155,12 +158,13 @@ class QuarkDriveProvider(CloudDriveProvider):
         entries = data if isinstance(data, list) else data.get("data") or []
         if not entries or not entries[0].get("download_url"):
             raise ProviderError(f"未取得下载直链: {file.name}")
+        dl_size = int(entries[0].get("size") or 0) or file.size
         return PlayResource(
             url=entries[0]["download_url"],
             headers={"Cookie": self._cookie, "Referer": REFERER, "User-Agent": USER_AGENT},
             fid=file.fid,
             filename=file.name,
-            video_size=file.size,
+            video_size=dl_size,
             source_name=self.name,
         )
 

@@ -48,6 +48,7 @@ async def bind_cookie(request: Request):
     finally:
         await provider.close()
     db.save_user_cookie(config.DB_PATH, user["id"], cookie)
+    db.delete_file_index_for_user(config.DB_PATH, user["id"])
     return {"ok": True, "message": "网盘 Cookie 绑定成功"}
 
 

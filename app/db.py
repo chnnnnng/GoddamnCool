@@ -180,6 +180,30 @@ def init(db_path: str, secret_key: str) -> None:
             """CREATE INDEX IF NOT EXISTS idx_file_parses_canonical
                ON file_parses (canonical_name)"""
         )
+        # file_index：一次成功的 Stremio 播放命中后写入的 O(1) 快路径映射。
+        # 下次同 imdb_id+季集直接 fid→play，彻底绕开标盘搜索 + 标题匹配。
+        # season/episode 为 NULL 表示 movie 或请求未指定集；partial unique index
+        # 处理 NULL 多值等价冲突（SQLite 允许 UNIQUE 列存多个 NULL，
+        # 用辅助列 _season_idx / _episode_idx 把 NULL 归一到 -1 解决）。
+        c.execute(
+            """CREATE TABLE IF NOT EXISTS file_index (
+                   id INTEGER PRIMARY KEY AUTOINCREMENT,
+                   user_id TEXT NOT NULL,
+                   imdb_id TEXT NOT NULL,
+                   vtype TEXT NOT NULL,
+                   season INTEGER,
+                   episode INTEGER,
+                   _season_idx INTEGER NOT NULL,    -- season 为 NULL 时存 -1
+                   _episode_idx INTEGER NOT NULL,   -- episode 为 NULL 时存 -1
+                   fid TEXT NOT NULL,
+                   filename TEXT NOT NULL DEFAULT '',
+                   source TEXT NOT NULL DEFAULT 'task',
+                   created_at TEXT DEFAULT (datetime('now', 'localtime')),
+                   last_hit_at TEXT DEFAULT (datetime('now', 'localtime')),
+                   hit_count INTEGER NOT NULL DEFAULT 1,
+                   UNIQUE(user_id, imdb_id, vtype, _season_idx, _episode_idx)
+               )"""
+        )
 
 
 def _encrypt(cookie: str) -> str:
@@ -360,6 +384,75 @@ def get_tasks_for_video(db_path: str, vtype: str, imdb_id: str,
         rows = c.execute(sql, params).fetchall()
     return [dict(r) for r in rows]
 
+
+# ---- file_index：Stremio 命中快路径缓存 ----
+
+def _se_idx(s: int | None) -> int:
+    return -1 if s is None else s
+
+
+def get_file_index(db_path: str, *, user_id: str, imdb_id: str,
+                   vtype: str, season: int | None,
+                   episode: int | None) -> dict | None:
+    """查询 file_index 快路径；命中则同时刷 hit_count / last_hit_at。
+    返回 {"fid", "filename", "source"} 或 None。"""
+    uid = user_id or ""
+    s_idx, e_idx = _se_idx(season), _se_idx(episode)
+    with _lock, _conn(db_path) as c:
+        row = c.execute(
+            """SELECT fid, filename, source FROM file_index
+               WHERE user_id = ? AND imdb_id = ? AND vtype = ?
+                 AND _season_idx = ? AND _episode_idx = ?""",
+            (uid, imdb_id, vtype, s_idx, e_idx),
+        ).fetchone()
+        if row is None:
+            return None
+        c.execute(
+            """UPDATE file_index SET last_hit_at = datetime('now', 'localtime'),
+                                      hit_count = hit_count + 1
+               WHERE user_id = ? AND imdb_id = ? AND vtype = ?
+                 AND _season_idx = ? AND _episode_idx = ?""",
+            (uid, imdb_id, vtype, s_idx, e_idx),
+        )
+    return {"fid": row["fid"], "filename": row["filename"],
+            "source": row["source"]}
+
+
+def upsert_file_index(db_path: str, *, user_id: str, imdb_id: str,
+                      vtype: str, season: int | None,
+                      episode: int | None, fid: str, filename: str,
+                      source: str = "matcher") -> None:
+    """写入 file_index。同影片同季集已存在时覆盖 fid + 重置 hit_count=1。"""
+    uid = user_id or ""
+    s_idx, e_idx = _se_idx(season), _se_idx(episode)
+    with _lock, _conn(db_path) as c:
+        c.execute(
+            """INSERT INTO file_index
+                   (user_id, imdb_id, vtype, season, episode,
+                    _season_idx, _episode_idx, fid, filename, source)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(user_id, imdb_id, vtype,
+                            _season_idx, _episode_idx)
+               DO UPDATE SET
+                   fid = excluded.fid,
+                   filename = excluded.filename,
+                   source = excluded.source,
+                   hit_count = 1,
+                   created_at = datetime('now', 'localtime'),
+                   last_hit_at = datetime('now', 'localtime')""",
+            (uid, imdb_id, vtype, season, episode,
+             s_idx, e_idx, fid, filename or "", source[:16]),
+        )
+
+
+def delete_file_index_for_user(db_path: str, user_id: str) -> int:
+    """清理某用户全部 file_index（重新绑定 Cookie 时调用，防 fid 残留）。"""
+    with _lock, _conn(db_path) as c:
+        return c.execute(
+            "DELETE FROM file_index WHERE user_id = ?", (user_id,)).rowcount
+
+
+# ---- TMDB 元数据缓存 ----
 
 def get_tmdb_meta(db_path: str, imdb_id: str, vtype: str,
                   ttl: float = 7 * 86400) -> dict | None:

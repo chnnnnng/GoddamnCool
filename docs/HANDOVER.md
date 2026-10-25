@@ -435,6 +435,87 @@ ss -tlnp | grep ':80' | grep -oP 'pid=\K[0-9]+' | head -1
 | 浏览器验证 127.0.0.1 失败 | chrome-error | Stremio 用 WebRTC 本地 server | 必须用公网 IP `http://47.117.135.164` |
 | 进程判断 `pgrep -f` | 命中 bash 自身 | grep 匹配 `app.main` 时包装也包含此字符串 | `ss -tlnp | grep ':80' | grep -oP 'pid=\K[0-9]+' | head -1` |
 | **绝对禁止** | 所有涉及进程判断的地方 | `pgrep -f` / `ps aux \| grep` | 用 `ss -tlnp` 口诀 |
+| **TV 端（Nuvio）播放夸克 CDN 返回 412** | PC/手机能播，TV 端黑屏/412 | Nuvio 对 `proxyHeaders.Cookie` 做 URL 解码，把 base64 的 `+` 变成空格，`Video-Auth` 失效 | 按 UA 区分：TV 端预编码 `+`→`%2B`（Nuvio 解码还原），PC 端保持 `+`；存储 Cookie 的 `%2B` 先还原为 `+`（CDN 只认 `+`） |
+
+---
+
+## 13.1 TV 端 Cookie 编码踩坑详细记录（2026-10）
+
+### 现象
+夸克 CDN 直链在桌面端/手机 Stremio 能正常播放，但在 TV 端（Nuvio 客户端）播放失败，
+CDN 返回 HTTP 412（或 400）。
+
+### 排查过程
+
+**第 1 步：确认 proxyHeaders 是否被遵循**
+- 无法抓包（客户端↔CDN 走 TLS），在服务器上搭 HTTP 调试端点 `/_debug_proxy`，
+  stream 响应里注入带 `X-Debug-Proxy: yes-please` 标记头的假流。
+- TV 端播放后看服务器日志，确认 `X-Debug-Proxy`、`Cookie`、`User-Agent`、`Referer`
+  全部 ✅ 到达。**排除"TV 端不遵循 proxyHeaders"假设。**
+
+**第 2 步：排除 Cookie 长度问题**
+- 注入 1352 字符假 Cookie（全 `x`），TV 端日志显示长度完整。**排除长度截断。**
+
+**第 3 步：排除 HTTPS 证书问题**
+- 把 stream URL 从 `https://` 降为 `http://`，TV 端仍 412。**排除证书/TLS。**
+
+**第 4 步：服务端代理捕获 TV 端真实请求**
+- 搭 `/_quark_proxy` 端点，TV 端请求时服务器记录其完整请求头，再用同样的 Range
+  转发到夸克 CDN。CDN 返回 206，但此方案因持续连接消耗服务器资源被弃用。
+
+**第 5 步：对比 PC 与 TV 的 Cookie 传递差异（根因）**
+- 在调试流里注入**真实夸克 Cookie**（含 `Video-Auth` base64 字段），分别让 PC/TV
+  请求 `/_debug_proxy`，对比日志里的 Cookie 首尾字符：
+  - PC 尾部：`...XGNou4+2+XeS87x3TFNdfzFtJlZB4e`（`+` 保持原样）
+  - TV 尾部：`...XGNou4 2 XeS87x3TFNdfzFtJlZB4e`（`+` 变成了空格）
+- **根因：Nuvio 对 Cookie 值做了 `application/x-www-form-urlencoded` 解码，
+  把 `+` 当作空格。** `Video-Auth` 是 base64，含 `+`/`/`/`=`，`+` 变空格后签名失效。
+
+**第 6 步：验证 CDN 对 `+`/`%2B`/空格的接受情况**
+```
+原始 Cookie（含 +）          → CDN 206 ✅
++ → %2B（全编码）            → CDN 400 ❌
++ → 空格（模拟 TV 解码结果） → CDN 400 ❌
+```
+CDN **只认 `+`，不认 `%2B` 也不认空格**。
+
+**第 7 步：按 UA 区分客户端编码**
+- PC 端 UA = `okhttp/4.12.0`，不做解码 → 保持原始 `+`
+- TV 端 UA = `Nuvio/1.1.0-beta.8`，做解码 → 预编码 `+`→`%2B`，Nuvio 解码后还原为 `+`
+
+**第 8 步：发现存储 Cookie 含 `%2B` 的二次问题**
+- 修复 PC 端后 PC 又不能播了，排查发现数据库存储的 Cookie 本身含 5 个 `%2B`
+  （夸克生成时已编码），CDN 不认 `%2B`。
+- 增加规范化步骤：先把存储 Cookie 里所有 `%2B` 还原为 `+`，再按客户端决定是否编码。
+
+### 最终修复（`app/stremio_routes.py`）
+
+```python
+ua = request.headers.get("user-agent", "")
+cookie = db.load_user_cookie(config.DB_PATH, user["id"])
+if cookie:
+    cookie = cookie.replace("%2B", "+")  # 规范化：CDN 只认 + 不认 %2B
+    if any(x in ua.lower() for x in ["nuvio", "android tv", "androidtv"]):
+        cookie = cookie.replace("+", "%2B")  # TV 端预编码，Nuvio 解码还原
+```
+
+### 关键结论
+1. **Nuvio 的 bug**：对 `behaviorHints.proxyHeaders` 里的字符串值做 URL 解码，
+   导致 Cookie 中 base64 的 `+` 变成空格。PC 端 okhttp 无此问题。
+2. **CDN 严格**：只接受原始 `+`，`%2B` 和空格都会返回 400/412。
+3. **`Video-Auth` 是唯一必需 Cookie**：`__pus`、`__puus` 单独都不能通过 CDN 校验，
+   必须传 `Video-Auth`，而它必然含 `+`。
+4. **服务端代理方案不可行**：大文件流式转发会导致服务器持续建立到 CDN 的连接，
+   资源消耗过大（SSH 卡死），不可作为生产方案。
+
+### 排查此类问题的通用方法
+1. **无法抓包时自建 HTTP 调试端点**：让客户端请求你的服务器，记录完整请求头，
+   对比 PC/TV 差异。注意用最小假 mp4 响应，避免播放器反复请求刷屏。
+2. **逐步二分排除**：proxyHeaders 遵循性 → Cookie 长度 → HTTPS → Cookie 特殊字符。
+3. **对比首尾字符**：长字符串被篡改时，首尾对比比长度对比更敏感（长度可能不变
+   但字符变了，如 `+`→空格）。
+4. **CDN 对编码的容忍度要实测**：不要假设 CDN 会做 URL 解码，用 curl 直接验证。
+5. **存储数据也要规范化**：第三方返回的数据可能已编码，入库后需统一规范化再使用。
 
 ---
 

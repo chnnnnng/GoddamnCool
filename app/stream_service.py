@@ -78,7 +78,12 @@ class StreamService:
         cookie: 调用者自己绑定的网盘 Cookie（多用户隔离，必传）；
         user_id: 任务归属过滤（None 不过滤兼容旧调用；'' 仅全局任务）。
         TMDB key 由管理员统一配置（settings）。
+
         """
+        return await self._get_streams_impl(vtype, video_id, cookie, user_id)
+
+    async def _get_streams_impl(self, vtype: str, video_id: str, cookie: str,
+                                user_id: str | None = None) -> tuple[list[dict], str]:
         if not cookie:
             return [], "未绑定网盘 Cookie，请在控制面板绑定"
         imdb_id, season, episode = parse_video_id(video_id)
@@ -106,57 +111,120 @@ class StreamService:
                            season: int | None, episode: int | None,
                            user_id: str | None = None) -> tuple[list[dict], str]:
         imdb_id, _, _ = parse_video_id(video_id)
+        uid = user_id or ""
+
+        # —— 路径 1：file_index 快路径（O(1)，完全绕开标盘搜索）——
+        idx = db.get_file_index(self.db_path, user_id=uid,
+                                imdb_id=imdb_id, vtype=vtype,
+                                season=season, episode=episode)
+        if idx and idx.get("fid"):
+            try:
+                resource = await provider.get_play_resource(
+                    CloudFile(fid=idx["fid"], name=idx.get("filename", ""),
+                              size=0, is_dir=False))
+                reason = "file_index 快路径命中"
+                return [self._to_stream(resource, reason)], reason
+            except ProviderError as e:
+                log.warning("file_index 命中但 fid 取直链失败（可能 Cookie 变更）: %s", e)
+
+        # —— 路径 2：transfer_task 直接 fid（完全不搜盘）——
+        task_file = self._resolve_fid_from_tasks(vtype, imdb_id, season,
+                                                 episode, uid)
+        if task_file is not None:
+            try:
+                resource = await provider.get_play_resource(task_file)
+            except ProviderError as e:
+                log.warning("transfer_task 直接路径 fid 取直链失败（可能文件已删）: %s，回退搜索匹配", e)
+            else:
+                db.upsert_file_index(self.db_path, user_id=uid,
+                                     imdb_id=imdb_id, vtype=vtype,
+                                     season=season, episode=episode,
+                                     fid=task_file.fid, filename=task_file.name,
+                                     source="task")
+                reason = "转存任务已定位该文件"
+                return [self._to_stream(resource, reason)], reason
+
+        # —— 路径 3：网盘搜索 + 标题匹配（原有逻辑）——
         files = await self._search_all(provider, meta, video_id, user_id)
         if not files:
             reason = f"网盘未搜索到“{meta.title}”"
             return self._with_guidance(vtype, video_id, reason, user_id), reason
         best = self.matcher.best(files, meta, season, episode)
-        if best is None:
-            # 转存任务已精准定位的文件可直接信任（Worker 选择时有分享结构上下文，
-            # 能覆盖裸集数文件名 06.mkv 这类标题匹配必失败的场景）
-            located = self._task_located_file(files, vtype, imdb_id, season,
-                                              episode, user_id)
-            if located is not None:
-                resource = await provider.get_play_resource(located)
-                return [self._to_stream(resource, "转存任务已定位该文件")], \
-                    "转存任务已定位该文件"
-            cands = self.matcher.match(files, meta, season, episode)
-            detail = "；".join(f"{c.file.name}({c.score})" for c in cands[:3]) or "无候选"
-            reason = f"置信度不足，暂不返回流（候选: {detail}）"
-            return self._with_guidance(vtype, video_id, reason, user_id), reason
-        resource = await provider.get_play_resource(best.file)
-        return [self._to_stream(resource, best.reason)], best.reason
+        if best is not None:
+            resource = await provider.get_play_resource(best.file)
+            db.upsert_file_index(self.db_path, user_id=uid,
+                                 imdb_id=imdb_id, vtype=vtype,
+                                 season=season, episode=episode,
+                                 fid=best.file.fid, filename=best.file.name,
+                                 source="matcher")
+            return [self._to_stream(resource, best.reason)], best.reason
 
-    def _task_located_file(self, files: list[CloudFile], vtype: str, imdb_id: str,
-                           season: int | None, episode: int | None,
-                           user_id: str | None = None) -> CloudFile | None:
-        """在搜索结果里找转存任务明确指定的目标文件（target_fid / result_json.name /
-        整包任务落盘文件清单按季集匹配）。"""
-        by_fid = {f.fid: f for f in files}
-        by_name = {f.name: f for f in files}
-        for t in db.get_tasks_for_video(self.db_path, vtype, imdb_id,
-                                        season, episode, user_id=user_id):
+        # 路径 3b：fallback —— 置信度不足或同分争议 → 引导流
+        cands = self.matcher.match(files, meta, season, episode)
+        detail = "；".join(f"{c.file.name}({c.score})" for c in cands[:3]) or "无候选"
+        reason = f"置信度不足，暂不返回流（候选: {detail}）"
+        return self._with_guidance(vtype, video_id, reason, user_id), reason
+
+    def _resolve_fid_from_tasks(self, vtype: str, imdb_id: str,
+                                season: int | None, episode: int | None,
+                                user_id: str | None) -> CloudFile | None:
+        """从 COMPLETED 转存任务中直接解析 fid，完全不依赖网盘搜索结果。
+
+        三种可靠来源（按优先级）：
+        1. target_fid 非空 —— episode/picks 模式或整包单文件落盘（从 result_json
+           尽量补齐文件名）
+        2. whole/picks 模式下 result_json.files 清单 —— 按季集号匹配文件（覆盖
+           "06.mkv" 等裸集数文件名标题匹配必失败的场景）
+        3. result_json.name —— 整包任务的顶层目录名/主文件名（movie 场景）
+
+        构造的 CloudFile 仅填 fid + name（get_play_resource 只需 fid），
+        彻底绕开 `_search_all` 搜索不到规范名的问题。"""
+        tasks = db.get_tasks_for_video(self.db_path, vtype, imdb_id,
+                                       season, episode, user_id=user_id)
+        for t in tasks:
             if t["status"] != "COMPLETED":
                 continue
-            if t["target_fid"] and t["target_fid"] in by_fid:
-                return by_fid[t["target_fid"]]
+            # 预解析 result_json（多处使用）
             try:
-                res = json.loads(t["result_json"]) or {}
+                res = json.loads(t["result_json"]) if t["result_json"] else {}
             except ValueError:
                 res = {}
-            # whole 整包任务：在落盘文件清单里按季集定位（裸集数文件名
-            # 标题匹配必失败，必须靠解析出的集数）
-            for entry in res.get("files") or []:
-                name = entry.get("name") or ""
-                fid = entry.get("fid") or ""
-                if fid in by_fid and episode is not None \
-                        and episode_of(name) == episode:
+
+            # 1) target_fid（最可靠，Worker 已写死）
+            if t["target_fid"]:
+                name = ""
+                # 从 result_json 尽量补齐文件名 —— 整包清单 / result_json.name
+                for entry in res.get("files") or []:
+                    if entry.get("fid") == t["target_fid"]:
+                        name = entry.get("name") or ""
+                        break
+                if not name:
+                    name = res.get("name") or ""
+                return CloudFile(fid=t["target_fid"],
+                                 name=name, size=0, is_dir=False)
+            # 2) result_json.files 清单 —— 整包任务按季集匹配
+            if res.get("mode") in ("bulk", "picks") \
+                    or t.get("mode") in ("whole", "picks") \
+                    or "files" in res:
+                for entry in res.get("files") or []:
+                    name = entry.get("name") or ""
+                    fid = entry.get("fid") or ""
+                    if not fid:
+                        continue
+                    if episode is None:
+                        return CloudFile(fid=fid, name=name, size=0, is_dir=False)
+                    if episode_of(name) != episode:
+                        continue
                     p = parse(name)
-                    if season is None or p.season in (None, season):
-                        return by_fid[fid]
+                    if season is not None and p.season is not None \
+                            and p.season != season:
+                        continue
+                    return CloudFile(fid=fid, name=name, size=0, is_dir=False)
+            # 3) result_json.name（整包顶层文件/目录名）
             name = res.get("name") or ""
-            if name and name in by_name:
-                return by_name[name]
+            fid = res.get("fid") or ""
+            if name and fid:
+                return CloudFile(fid=fid, name=name, size=0, is_dir=False)
         return None
 
     async def _search_all(self, provider: CloudDriveProvider, meta: VideoMeta,

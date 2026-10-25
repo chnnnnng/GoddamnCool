@@ -5,7 +5,7 @@
 """
 from urllib.parse import quote
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
 from . import config, db, settings
@@ -51,13 +51,22 @@ async def user_manifest(stream_token: str):
 
 
 @router.get("/s/{stream_token}/stream/{vtype}/{video_id}.json")
-async def user_stream(stream_token: str, vtype: str, video_id: str):
+async def user_stream(stream_token: str, vtype: str, video_id: str, request: Request):
+    ua = request.headers.get("user-agent", "")
     user = db.get_user_by_stream_token(config.DB_PATH, stream_token)
     if not user:
         return _stream_response([], "Add-on 地址无效")
     if user["disabled"]:
         return _stream_response([], "账号已被禁用，请联系管理员")
     cookie = db.load_user_cookie(config.DB_PATH, user["id"])
+    # 1. 规范化：CDN 只认 + 不认 %2B，先把存储 cookie 里的 %2B 还原为 +
+    # 2. TV 端（Nuvio）会对 proxyHeaders 里的 Cookie 做 URL 解码，把 + 变成空格，
+    #    导致 Video-Auth 失效。对 TV 端预编码 + → %2B，TV 解码后还原为 +；
+    #    PC 端（okhttp）不解码，保持原始 +。
+    if cookie:
+        cookie = cookie.replace("%2B", "+")
+        if any(x in ua.lower() for x in ["nuvio", "android tv", "androidtv"]):
+            cookie = cookie.replace("+", "%2B")
     if not cookie:
         # 未绑定 Cookie 时严格隔离：直接给绑定引导
         guide = []
