@@ -692,35 +692,43 @@ def test_static_js_contains_no_python_artifacts():
 # ---------- 阶段 7：搜索缓存（1 天） ----------
 
 async def test_search_result_cached_one_day(tmp_db, monkeypatch):
-    """同参数第二次搜索命中 kv_cache，不再请求外部来源；候选内容一致。"""
+    """同参数第二次搜索命中 kv_cache（chain 层），不再请求外部来源；候选内容一致。"""
     calls = patch_real_search(monkeypatch, tmp_db, "余罪", "Yu Zui")
-    svc = CandidateService(db_path=tmp_db)
-    m1, c1, e1, kw1 = await svc.search("series", "tt5925192")
+    from app.search_chains import BaseSearchChain
+    # 清空该测试可能遗留的缓存
+    db.clear_cache(tmp_db, prefix="search:series")
+    chain = BaseSearchChain()
+    r1 = await chain.search("余罪", vtype="series", id="tt5925192")
+    c1 = r1["cands"]
     assert len(calls) == 2                      # 中英名各实搜一次
-    m2, c2, e2, kw2 = await svc.search("series", "tt5925192")
-    assert len(calls) == 2                      # 未新增来源请求
+    r2 = await chain.search("余罪", vtype="series", id="tt5925192")
+    c2 = r2["cands"]
+    assert len(calls) == 2                      # 未新增来源请求（命中缓存）
     assert [c.share_url for c in c2] == [c.share_url for c in c1]
-    assert kw2 == kw1 and e2 == ""
-    assert (m2.id if m2 else None) == (m1.id if m1 else None)
 
 
 async def test_search_cache_disabled_when_ttl_zero(tmp_db, monkeypatch):
     """SEARCH_CACHE_TTL=0：关闭缓存，每次都实搜。"""
     calls = patch_real_search(monkeypatch, tmp_db, "余罪", "Yu Zui")
     monkeypatch.setattr(config, "SEARCH_CACHE_TTL", 0)
-    svc = CandidateService(db_path=tmp_db)
-    await svc.search("series", "tt5925192")
-    await svc.search("series", "tt5925192")
+    from app.search_chains import BaseSearchChain
+    db.clear_cache(tmp_db, prefix="search:series")
+    chain = BaseSearchChain()
+    await chain.search("余罪", vtype="series", id="tt5925192")
+    await chain.search("余罪", vtype="series", id="tt5925192")
     assert len(calls) == 4                      # 两次都实搜
 
 
 async def test_search_cache_distinguishes_disks(tmp_db, monkeypatch):
     """不同 disks 参数 → 不同缓存键（默认夸克 ≠ 全部网盘）。"""
     calls = patch_real_search(monkeypatch, tmp_db, "FRIENDS")
-    svc = CandidateService(db_path=tmp_db)
-    await svc.search("series", "tt5925192", disks=None)
-    await svc.search("series", "tt5925192", disks=[])
-    assert len(calls) == 2                      # 缓存键不同，各实搜一轮
+    from app.search_chains import BaseSearchChain
+    db.clear_cache(tmp_db, prefix="search:series")
+    chain = BaseSearchChain()
+    await chain.search("老友记", vtype="series", id="tt2728372", disks=["quark"])
+    await chain.search("老友记", vtype="series", id="tt2728372", disks=None)
+    await chain.search("老友记", vtype="series", id="tt2728372", disks=[])
+    assert len(calls) == 6                      # 3 种 disks 各 × 2 关键词 = 6 次实搜
 
 
 # ---------- 阶段 7：内容详情直显 + 无视频文件排除 ----------

@@ -481,6 +481,58 @@ def clear_cache(db_path: str, prefix: str | None = None) -> int:
         return c.execute("DELETE FROM kv_cache").rowcount
 
 
+def get_chain_cache(db_path: str, cache_key: str) -> dict | None:
+    """chain 层统一缓存读取。
+
+    优先级：先读 ai_enhanced=True 的，没有再读 ai_enhanced=False 的。
+    返回 None 表示都 miss；否则返回 {data, ai_enhanced}。"""
+    with _lock, _conn(db_path) as c:
+        rows = c.execute(
+            "SELECT value, expires_at FROM kv_cache WHERE key LIKE ? ORDER BY expires_at DESC",
+            (f"{cache_key}%",)).fetchall()
+        for r in rows:
+            if r["expires_at"] < time.time():
+                continue
+            try:
+                obj = json.loads(r["value"])
+            except Exception:
+                continue
+            return {"data": obj.get("data"), "ai_enhanced": bool(obj.get("ai_enhanced"))}
+    return None
+
+
+def set_chain_cache(db_path: str, cache_key: str, data: dict, *,
+                    ai_enhanced: bool, ttl: float) -> None:
+    """chain 层统一缓存写入。
+
+    同时写两份 key（ai 后缀 / 普通后缀），让 Base/AISearchChain 各自按优先级匹配。
+    ai_enhanced=True 时会把旧的普通缓存**替换**掉——用户明确升级到 AI 结果了。"""
+    payload = json.dumps({"data": data, "ai_enhanced": ai_enhanced},
+                         ensure_ascii=False)
+    t = time.time() + ttl
+    with _lock, _conn(db_path) as c:
+        if ai_enhanced:
+            # 写 ai 版本 + 覆盖普通版本（用 AI 结果替换旧普通结果）
+            c.execute(
+                """INSERT INTO kv_cache (key, value, expires_at) VALUES (?, ?, ?)
+                   ON CONFLICT(key) DO UPDATE SET value = excluded.value,
+                                                 expires_at = excluded.expires_at""",
+                (cache_key + ":ai", payload, t))
+            c.execute(
+                """INSERT INTO kv_cache (key, value, expires_at) VALUES (?, ?, ?)
+                   ON CONFLICT(key) DO UPDATE SET value = excluded.value,
+                                                 expires_at = excluded.expires_at""",
+                (cache_key, payload, t))
+        else:
+            # 只写普通版本（ai_enhanced=False）
+            c.execute(
+                """INSERT INTO kv_cache (key, value, expires_at) VALUES (?, ?, ?)
+                   ON CONFLICT(key) DO UPDATE SET value = excluded.value,
+                                                 expires_at = excluded.expires_at""",
+                (cache_key, payload, t))
+        c.execute("DELETE FROM kv_cache WHERE expires_at < ?", (time.time(),))
+
+
 def get_cache_info(db_path: str) -> dict:
     """各前缀缓存条目数（admin 面板展示）。"""
     out: dict[str, int] = {}

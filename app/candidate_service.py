@@ -148,11 +148,8 @@ class CandidateService:
         disks_key = "all" if disks == [] else (",".join(disks) if disks else "default")
         cache_key = (f"search:{vtype}|{video_id or ''}|{'>'.join(keywords)}"
                      f"|{disks_key}")
-        if cached := db.get_cache(self.db_path, cache_key):
-            meta_c = VideoMeta(cached["meta"]) if cached.get("meta") else None
-            cands_c = [SearchCandidate(**c) for c in cached["candidates"]]
-            log.info("候选搜索命中缓存 %s", cache_key)
-            return meta_c, cands_c, "", cached["kw"]
+        # 缓存读写移到 chain 层（BaseSearchChain/AISearchChain 统一管
+        # 普通/AI 两种缓存，这里只负责 PanSou + verify_links + 去重）
         tasks = [(p, k) for p in providers for k in keywords]
         t0_svc = time.monotonic()
         results = await asyncio.gather(
@@ -214,15 +211,7 @@ class CandidateService:
         log.info("候选搜索 %s kw=%r: %d 关键词 %d 来源 %d 有效候选, 错误: %s",
                  video_id or "(独立搜索)", kw, len(keywords), len(providers),
                  len(merged), errors or "无")
-        if not errors:
-            db.set_cache(self.db_path, cache_key, {
-                "meta": ({"imdb_id": meta.id, "name": meta.title,
-                          "name_zh": meta.name_zh, "name_en": meta.name_en,
-                          "type": meta.type, "year": meta.year,
-                          "videos": meta.videos} if meta else None),
-                "candidates": [self._cand_dict(c) for c in merged],
-                "kw": kw,
-            }, settings.get("SEARCH_CACHE_TTL"))
+        # 缓存由 chain 层统一管理（BaseSearchChain/AISearchChain）
         return meta, merged, "；".join(errors), kw
 
     @staticmethod

@@ -84,18 +84,76 @@ class BaseSearchChain:
     async def search(self, keyword: str, *, vtype: str = "movie", id: str = "",
                      season: int | None = None, disks=None, cookie: str = "") -> dict:
         svc = self.service
+        cache_key = self._cache_key(vtype, id, keyword, disks)
+        _TTL = float(settings.get("SEARCH_CACHE_TTL") or config.SEARCH_CACHE_TTL)
+        # ---- 统一缓存：ttl=0 关闭；否则优先 AI 增强缓存，再普通缓存 ----
+        if _TTL > 0:
+            cached = db.get_chain_cache(config.DB_PATH, cache_key)
+            if cached and cached.get("ai_enhanced"):
+                log.info("[chain] 命中 AI 增强缓存 %s", cache_key)
+                return self._restore(cached["data"])
+            if cached:
+                log.info("[chain] 命中普通缓存 %s", cache_key)
+                return self._restore(cached["data"])
+
         # ---- 阶段 A：PanSou 搜索 + verify_links 初步分档 ----
         meta, cands, errors, final_kw = await svc.search(
             vtype, id, keyword=keyword, disks=disks, cookie=cookie)
 
+        result = await self._finish(meta, cands, errors, final_kw, cookie=cookie)
+
+        # ---- 写缓存（普通）----
+        if _TTL > 0:
+            db.set_chain_cache(config.DB_PATH, cache_key, self._serialized(result),
+                               ai_enhanced=False, ttl=_TTL)
+        return result
+
+    # ------------------------------ 内部 helpers ------------------------------
+
+    @staticmethod
+    def _cache_key(vtype: str, video_id: str, keyword: str, disks) -> str:
+        disks_key = "all" if disks == [] else (",".join(disks) if disks else "default")
+        return f"search:{vtype}|{video_id or ''}|{keyword}|{disks_key}"
+
+    @staticmethod
+    def _serialized(result: dict) -> dict:
+        from .candidate_service import CandidateService as _CS
+        meta = result["meta"]
+        return {
+            "meta": ({"imdb_id": getattr(meta, "id", None),
+                      "name": getattr(meta, "title", None),
+                      "name_zh": getattr(meta, "name_zh", None),
+                      "name_en": getattr(meta, "name_en", None),
+                      "type": getattr(meta, "type", None),
+                      "year": getattr(meta, "year", None),
+                      "videos": getattr(meta, "videos", None)} if meta else None),
+            "candidates": [_CS._cand_dict(c) for c in result["cands"]],
+            "errors": result.get("errors", []),
+            "kw": result["keyword"],
+        }
+
+    @staticmethod
+    def _restore(data: dict) -> dict:
+        from .candidate_service import CandidateService as _CS, SearchCandidate
+        from .tmdb import VideoMeta
+        meta_d = data.get("meta")
+        meta = VideoMeta(meta_d) if meta_d else None
+        cands = [SearchCandidate(**c) for c in data.get("candidates", [])]
+        return {"meta": meta, "cands": cands,
+                "errors": data.get("errors", []),
+                "keyword": data.get("kw") or ""}
+
+    async def _finish(self, meta, cands, errors, final_kw, *, cookie: str) -> dict:
+        """普通链的阶段 B~F：inspect → 二次筛选 → 规格排序 → canonical → 分档。"""
+        svc = self.service
+
         # ---- 阶段 B：TOP INSPECT_TOP_N alive 候选做 inspect_share ----
-        # 所有 alive 候选（ok/passcode/locked/空）都按匹配度 score 排序取前 N
         alive = [c for c in cands if _is_alive(c)]
         alive.sort(key=lambda c: -c.score)
         _INSPECT_N = max(3, int(settings.get("INSPECT_TOP_N")
                                 or settings.get("INSPECT_LIMIT")
                                 or config.INSPECT_TOP_N))
-        targets = alive[:_INSPECT_N]  # 不限 disk 类型，匹配度最高的 N 个
+        targets = alive[:_INSPECT_N]
         if targets and cookie:
             sem = asyncio.Semaphore(4)
 
@@ -110,12 +168,11 @@ class BaseSearchChain:
             await asyncio.gather(*(_one(c) for c in targets))
 
         # ---- 阶段 C：二次筛选 → 存疑 ----
-        # 只对成功 inspect 到 detail 的 targets 做；没 inspect 或 detail 为空的不动
         _MIN_SIZE_H = float(settings.get("MIN_VIDEO_SIZE_H") or config.MIN_VIDEO_SIZE_H)
         for c in targets:
             d = getattr(c, "detail", None)
             if not d:
-                continue  # inspect_share 返回 None/{} → 无法判断，保留 alive
+                continue
             vc = d.get("video_count", 0) or 0
             ts = _human_size_to_float_h(d.get("total_size_h"))
             if vc == 0:
@@ -126,10 +183,6 @@ class BaseSearchChain:
                 c.alive_summary = f"内容体积过小（< {_MIN_SIZE_H}GB）"
 
         # ---- 阶段 D：规格排序 + 未 inspect 保持匹配度顺序 ----
-        # 拆成三批：
-        #   1) inspected_ok → 被 inspect 过 + 通过二次筛选 → 规格综合分排序
-        #   2) uninspected_alive → alive 但没被 inspect 过 → 保持匹配度顺序
-        #   3) uncertain + bad → 放后面
         inspected_ok = []
         uninspected_alive = []
         for c in alive:
@@ -138,7 +191,6 @@ class BaseSearchChain:
             elif _is_alive(c):
                 uninspected_alive.append(c)
         inspected_ok.sort(key=self._spec_score, reverse=True)
-        # uninspected_alive 已经是匹配度 score 降序（alive 排好序切片来的）
 
         # ---- 阶段 E：所有候选补规则 canonical ----
         for c in cands:
@@ -189,17 +241,37 @@ class BaseSearchChain:
 
 
 class AISearchChain(BaseSearchChain):
-    """AI 精选链：先跑完普通链，再叠加两阶段 AI（SKIM → DEEP PARSE → 替换）。"""
+    """AI 精选链：缓存优先命中 AI 结果 → 否则增量（普通缓存之上叠加 AI）→ 全 miss 跑普通再 AI。"""
 
     async def search(self, keyword: str, *, vtype: str = "movie", id: str = "",
                      season: int | None = None, disks=None, cookie: str = "") -> dict:
-        # ---- 先跑完普通链 ----
-        result = await super().search(keyword, vtype=vtype, id=id, season=season,
-                                       disks=disks, cookie=cookie)
+        cache_key = self._cache_key(vtype, id, keyword, disks)
+
+        # ---- 统一缓存：先看有没有 AI 结果 ----
+        cached = db.get_chain_cache(config.DB_PATH, cache_key)
+        if cached:
+            if cached.get("ai_enhanced"):
+                log.info("[AI chain] 命中 AI 增强缓存 %s", cache_key)
+                return self._restore(cached["data"])
+            # 命中普通缓存——在其基础上增量跑 AI 链，不重跑普通搜索
+            log.info("[AI chain] 命中普通缓存，增量跑 AI %s", cache_key)
+            result = self._restore(cached["data"])
+        else:
+            # ---- 全 miss：先跑普通链 ----
+            result = await super().search(keyword, vtype=vtype, id=id,
+                                          season=season, disks=disks, cookie=cookie)
+
         meta = result["meta"]
+        # ---- 增量叠加 AI 链 ----
         await self._ai_enrich(result["cands"], keyword=keyword,
                                title=(meta.title if meta else ""),
                                season=season)
+
+        # ---- 写 AI 增强缓存（同时覆盖普通缓存，用户明确升级）----
+        db.set_chain_cache(config.DB_PATH, cache_key, self._serialized(result),
+                           ai_enhanced=True,
+                           ttl=float(settings.get("SEARCH_CACHE_TTL")
+                                     or config.SEARCH_CACHE_TTL))
         return result
 
     async def _ai_enrich(self, cands: list, *, keyword: str, title: str,
