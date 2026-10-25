@@ -90,32 +90,49 @@ stremio://<host>:<port>/manifest.json
 ```
 app/                  # 后端：纯 JSON API + 静态资源服务（前后端分离）
 ├── main.py            # FastAPI 组装与启动（/static 挂载前端静态资源，no-store）
-├── config.py          # .env 配置加载
-├── db.py              # SQLite：凭证（Fernet 加密）+ 转存任务表
-├── tmdb.py            # IMDb ID → TMDB 双语标题/年份/季集（缓存 + CheckTMDB IP 直连）
-├── matcher.py         # MovieMatcher 文件名解析与置信度匹配
-├── stream_service.py  # Stream 业务编排（未命中时生成 externalUrl 引导流）
-├── transfer_worker.py # 转存 Worker（后台执行转存任务：状态机推进/失败恢复/重启恢复）
-├── candidate_service.py # 多来源候选搜索编排（去重/评分）
-├── candidate_routes.py  # /candidates /task/{id} 页面路由 + /api/* 鉴权接口
-├── stremio_routes.py  # /manifest.json /stream/...
-├── web_routes.py      # /setup 页面路由、POST /setup（JSON）、/health
+├── config.py          # .env / 环境变量 / 根目录文件配置加载
+├── settings.py        # Admin 面板可配置项（SQLite kv 表，支持 bool/int/float/str）
+├── db.py              # SQLite：多用户表 + 凭证（Fernet 加密）+ 转存任务 + 缓存 + API 调用统计
+├── auth.py            # Fernet 密钥、加密 / 解密 Cookie
+├── meta/              # 元数据源域
+│   ├── base.py        # MetaProvider 抽象 + VideoMeta 统一数据类（含 source_id/source_kind/canonical_id）
+│   ├── tmdb.py        # TMDBMetaProvider 派生类（IMDb/TMDB ID/关键词三路径 + SQLite 缓存）
+│   └── __init__.py    # get_meta_provider() 工厂（按 settings.META_PROVIDER 选实例）
+├── tmdb.py            # 薄壳 facade：固定走 tmdb_provider 单例，旧 import 零改动
+├── search/            # 搜索域
+│   ├── base.py        # ResourceSearchProvider / SearchCandidate / SearchError
+│   ├── pansou.py      # PanSouProvider（PanSou 自部署实例 + /api/check/links）
+│   ├── search_service.py  # 搜索编排（多关键词并发、去重、评分、缓存 1 天）
+│   ├── search_chains.py   # BaseSearchChain / AISearchChain（AI 链叠加 SKIM→DEEPPARSE）
+│   └── __init__.py
+├── search_routes.py   # 搜索相关 HTTP 路由（/api/candidates/*，需鉴权）
+├── stremio_routes.py  # /s/{stream_token}/manifest.json + /stream/{type}/{id}.json
+├── stream_service.py  # Stream 业务编排：IMDb ID → MetaProvider → 网盘匹配 → Stremio Stream
+├── transfer_worker.py # 转存 Worker（后台 asyncio 线程，六态状态机）
+├── admin_routes.py    # Admin 面板 API（配置 / 用户 / 缓存 / API 统计）
+├── user_routes.py     # 用户面板（stream_token、Cookie、配额）
+├── auth_routes.py     # 用户登录 / 注册
+├── web_routes.py      # /setup /search /task/{id} /admin 页面路由 + {{APP_NAME}} 注入
+├── matcher.py         # MovieMatcher 文件名 ↔ 影片标题匹配（含拼音跨语言）
+├── name_parser.py     # 文件名解析 + 规格徽章
+├── llm.py             # AI 评审配置（API_BASE/API_KEY/MODEL 三项全非空才 configured）
 └── providers/
     ├── base.py        # CloudDriveProvider 抽象
-    ├── quark.py       # 夸克私有接口封装（唯一标注"可能随官方变更"的文件）
-    └── search/        # ResourceSearchProvider 抽象 + PanSou 实现（可插拔扩展）
+    ├── quark.py       # 夸克私有接口封装（登录态、文件、分享、转存、play 直链）
+    └── __init__.py
 web/                  # 前端：原生 HTML/CSS/JS 静态文件（无构建步骤，深色 + 绿色主题）
-├── setup.html         # 授权绑定页（fetch 提交，结果行内展示）
+├── index.html         # 账号绑定页（/setup）
 ├── search.html        # 搜索页（独立搜索 + Stremio 锚定模式二合一）
 ├── task.html          # 转存任务状态页
-├── css/               # common.css 共用样式 + search.css 搜索页专属
+├── admin.html         # 管理员面板
+├── css/               # common.css（三页共用）+ search.css + admin.css
 └── js/
-    ├── common.js      # 共用：令牌管理 / api() 封装 / DOM 工具（textContent 防 XSS）
-    ├── spatial-nav.js # TV 遥控器适配：方向键空间导航 + 非按钮元素 Enter/空格激活
-    └── setup.js / search.js / task.js  # 各页面交互逻辑
+    ├── common.js      # 令牌 / api() / DOM 工具（textContent 防 XSS）
+    ├── spatial-nav.js # TV 遥控器方向键空间导航
+    └── setup.js / search.js / task.js / admin.js
 ```
 
-技术方案与调研依据见 [docs/phase1-research.md](docs/phase1-research.md)。
+生产运维命令、全部配置项、私有接口要点、踩坑速查表见 [docs/HANDOVER.md](docs/HANDOVER.md)。
 
 ## 测试
 
