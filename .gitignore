@@ -5,6 +5,8 @@
 QUARK_COOKIE
 # TMDB API key（部署时手动放置）
 TMDB_API_KEY
+# 大语言模型 API 凭证（阿里云 MaaS 等，部署时手动放置）
+LLM_API
 # SQLite 数据库（加密凭证与转存任务记录）
 data/
 
