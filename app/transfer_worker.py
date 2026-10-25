@@ -51,12 +51,6 @@ def parse_pwd_id(share_url: str) -> str:
     return m.group(1)
 
 
-def _folder_of(path: str) -> str:
-    """取文件所在目录名（"第三季/06.mp4" → "第三季"，顶层文件为空）。"""
-    parent = path.rstrip("/").rsplit("/", 1)[0] if "/" in path.rstrip("/") else ""
-    return parent.rsplit("/", 1)[-1] if parent else ""
-
-
 class TransferWorker:
     """单任务串行执行（限流，需求第 10 条）；FastAPI lifespan 内启动。"""
 
@@ -187,17 +181,14 @@ class TransferWorker:
                     result = {"mode": "bulk", "share_entries": len(tops),
                               "names": [t.path for t in tops][:20]}
 
-            # 转存智能重命名计划（需求第 8 条）：提交前算好"原名 → 规范名"
-            rename_map, ai_used = await self._build_rename_map(task, chosen)
             dir_fid = await self._target_dir(provider, task)
             save = await provider.save_share_files(
                 pwd_id, stoken, chosen, to_pdir_fid=dir_fid)
+            # payload 仅保存定位所需字段；智能重命名延后到 _locate_and_complete
+            # （文件落盘后 list_dir_files 才能拿到真实文件名/目录结构，whole 模式
+            # 下 share_entries 是顶层目录而非视频文件，提交前算不出 rename_map）
             payload = dict(result, save_top_fids=save["top_fids"],
                            save_dir_fid=dir_fid)
-            if rename_map:
-                payload["rename_map"] = rename_map
-                if ai_used:
-                    payload["ai_renamed"] = True
             # save 响应内嵌的 top_fids 是轮询响应缺失时的兜底（实测出现过 null）
             db.set_task_fields(self.db_path, task["id"],
                                quark_task_id=save["task_id"],
@@ -327,51 +318,71 @@ class TransferWorker:
                 return f.fid
         return None
 
+    async def _rename_after_landing(self, provider: QuarkDriveProvider,
+                                     task: dict, result: dict,
+                                     dir_fid: str) -> None:
+        """落盘后智能重命名（需求第 8 条）：list_dir_files 列真实文件 →
+        算 rename_map → 批量改名 + 写记录 txt。whole/picks/episode 三种 mode
+        都能正确触发（submit 阶段拿不到真实文件名，whole 模式顶层是目录）。"""
+        try:
+            drive_files = await provider.list_dir_files(dir_fid, max_depth=3)
+        except ProviderError as e:
+            log.warning("任务 %s 重命名前列目录失败: %s", task["id"], e)
+            return
+        if not drive_files:
+            return
+        rename_map, ai_used = await self._build_rename_map(task, drive_files)
+        if not rename_map:
+            return
+        await self._apply_renames(provider, task, result, dir_fid,
+                                  rename_map, ai_used)
+
     async def _build_rename_map(
             self, task: dict,
-            chosen: list[ShareFile]) -> tuple[dict[str, str], bool]:
-        """转存智能重命名计划（需求第 8 条）：返回 ({分享路径: 规范名}, 是否用了 AI)。
+            drive_files: list[CloudFile]) -> tuple[dict[str, str], bool]:
+        """落盘后算 rename_map：({落盘文件名: 规范名}, 是否用了 AI)。
 
-        规范名：AI 规范名优先（对规则解析不出标题的文件名走 llm.parse_names
-        兜底，带 1 天缓存），否则 name_parser 规范名。仅视频文件参与。"""
-        videos = [e for e in chosen
-                  if not e.is_dir and e.name
-                  and os.path.splitext(e.name)[1].lower() in VIDEO_EXTS
-                  and not JUNK_PATTERN.search(e.name)]
+        规范名：AI 兜底无标题文件名，否则 canonical_with_context（任务标题/候选标题）。
+        key 是落盘 basename（whole 模式顶层是目录 → list_dir_files 递归进入子目录
+        拿到视频文件名，不再依赖 ShareFile.path）。"""
+        videos = [f for f in drive_files
+                  if not f.is_dir and f.name
+                  and os.path.splitext(f.name)[1].lower() in VIDEO_EXTS
+                  and not JUNK_PATTERN.search(f.name)]
         if not videos:
             return {}, False
         ai_titles = await self._ai_titles(task, videos)
         out: dict[str, str] = {}
-        for e in videos:
+        for f in videos:
             kw = dict(search_title=(task.get("title") or "")[:100],
-                      share_title=(task.get("candidate_title") or "")[:200],
-                      folder=_folder_of(e.path))
-            info = name_parser.parse(e.name)
+                      share_title=(task.get("candidate_title") or "")[:200])
+            info = name_parser.parse(f.name)
             if not (info.title or info.title_en):
-                ai = ai_titles.get(e.name)
-                if ai:  # AI 标题兜底：直接按 AI 标题生成规范名
+                ai = ai_titles.get(f.name)
+                if ai:
                     cname = name_parser.canonical(info, title=ai)
                 else:
-                    cname = canonical_with_context(e.name, **kw)
+                    cname = canonical_with_context(f.name, **kw)
             else:
-                cname = canonical_with_context(e.name, **kw)
-            if cname and cname != e.name:
-                out[e.path or e.name] = cname
+                cname = canonical_with_context(f.name, **kw)
+            if cname and cname != f.name:
+                out[f.name] = cname
         return out, bool(ai_titles)
 
     @staticmethod
-    async def _ai_titles(task: dict, videos: list[ShareFile]) -> dict[str, str]:
+    async def _ai_titles(task: dict,
+                         drive_files: list[CloudFile]) -> dict[str, str]:
         """AI 兜底解析无标题文件名（结果有缓存；未配置/失败返回空）。"""
         if not llm.configured():
             return {}
         names = []
-        for e in videos:
-            if name_parser.parse(e.name).title:
+        for f in drive_files:
+            if name_parser.parse(f.name).title:
                 continue  # 规则可解出标题，无需 AI
-            names.append({"name": e.name[:300],
+            names.append({"name": f.name[:300],
                           "search_title": (task.get("title") or "")[:100],
                           "share_title": (task.get("candidate_title") or "")[:200],
-                          "folder": _folder_of(e.path)})
+                          "folder": os.path.dirname(f.name)})
         if not names:
             return {}
         try:
@@ -452,11 +463,12 @@ class TransferWorker:
                                         "size": f.size}
                                        for f in found[:50]]
 
-        # 转存智能重命名（需求第 8 条）：落盘文件改名为规范名并写记录 txt；
-        # 全程尽力而为，失败只记日志，不影响任务成功
-        if result.get("rename_map"):
-            await self._apply_renames(provider, task, result,
-                                      result.get("save_dir_fid") or "0")
+        # 转存智能重命名（需求第 8 条）：落盘后 list_dir_files 列真实文件
+        # （whole 模式顶层是目录而非视频文件，提交前算不出 rename_map），
+        # 算好 rename_map 后调 rename_file 批量改名 + 写记录 txt；
+        # 全程尽力而为，失败只记日志，不影响任务成功。
+        dir_fid = result.get("save_dir_fid") or "0"
+        await self._rename_after_landing(provider, task, result, dir_fid)
 
         db.set_task_fields(self.db_path, task["id"],
                            target_fid=fid,
@@ -469,12 +481,10 @@ class TransferWorker:
                  task["id"], fid, mode, located)
 
     async def _apply_renames(self, provider: QuarkDriveProvider,
-                             task: dict, result: dict, dir_fid: str) -> None:
-        """落盘文件智能重命名（需求第 8 条）：按提交时算好的 rename_map
-        把网盘文件改名为规范名，并更新任务 result 内的文件名（任务明细与
-        Stream 定位用），同时在目标目录写入「已有{APP_NAME}智能重命名.txt」。"""
-        rename_map = result.get("rename_map") or {}
-        by_base = {os.path.basename(k): v for k, v in rename_map.items()}
+                             task: dict, result: dict, dir_fid: str,
+                             rename_map: dict[str, str],
+                             ai_used: bool = False) -> None:
+        """批量改名 + 更新 result + 写 txt。rename_map 的 key 是落盘 basename。"""
         try:
             drive_files = await provider.list_dir_files(dir_fid, max_depth=3)
         except ProviderError as e:
@@ -482,7 +492,7 @@ class TransferWorker:
             return
         renamed: list[list[str]] = []
         for f in drive_files:
-            new = by_base.get(f.name)
+            new = rename_map.get(f.name)
             if not new or new == f.name:
                 continue
             try:
@@ -496,13 +506,16 @@ class TransferWorker:
             return
         ren = {a: b for a, b in renamed}
         if result.get("name") and result["name"] in ren:
-            result.setdefault("origin_name", result["name"])  # 明细显示原名
+            result.setdefault("origin_name", result["name"])
             result["name"] = ren[result["name"]]
         for entry in result.get("files") or []:
             if entry.get("name") in ren:
-                entry.setdefault("origin", entry["name"])  # 明细显示原名
+                entry.setdefault("origin", entry["name"])
                 entry["name"] = ren[entry["name"]]
         result["renamed"] = renamed
+        result["rename_map"] = rename_map
+        if ai_used:
+            result["ai_renamed"] = True
         log.info("任务 %s 智能重命名 %d 个文件", task["id"], len(renamed))
         await self._write_rename_note(provider, dir_fid, renamed)
 

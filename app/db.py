@@ -144,6 +144,28 @@ def init(db_path: str, secret_key: str) -> None:
                    value TEXT NOT NULL               -- JSON 序列化
                )"""
         )
+        c.execute(
+            """CREATE TABLE IF NOT EXISTS file_parses (
+                   id INTEGER PRIMARY KEY AUTOINCREMENT,
+                   original_path TEXT NOT NULL DEFAULT '',  -- 含目录的原始文件路径（去重辅助）
+                   original_name TEXT NOT NULL,              -- basename
+                   parse_method TEXT NOT NULL,               -- rule / ai / ai_title_only
+                   structured_info TEXT NOT NULL DEFAULT '{}',-- JSON：title/year/season/episode/resolution/source/codec/audio/group
+                   canonical_name TEXT NOT NULL DEFAULT '',
+                   source_scene TEXT NOT NULL,               -- search / inspect / ai_review / ai_parse / transfer
+                   source_key TEXT NOT NULL DEFAULT '',      -- 分享 URL / 任务 ID / 候选 title 等
+                   created_at TEXT DEFAULT (datetime('now', 'localtime')),
+                   UNIQUE(original_path, source_scene)
+               )"""
+        )
+        c.execute(
+            """CREATE INDEX IF NOT EXISTS idx_file_parses_name_scene
+               ON file_parses (original_name, source_scene)"""
+        )
+        c.execute(
+            """CREATE INDEX IF NOT EXISTS idx_file_parses_canonical
+               ON file_parses (canonical_name)"""
+        )
 
 
 def _encrypt(cookie: str) -> str:
@@ -375,6 +397,36 @@ def list_name_issues(db_path: str, limit: int = 2000) -> list[dict]:
             (limit,),
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+# ---- 文件解析资料库（需求第 4 条：原始文件名 → 解析方式 → 结构化信息 → 规范名） ----
+
+def record_file_parse(db_path: str, *, original_path: str = "",
+                      original_name: str, parse_method: str,
+                      structured_info: dict, canonical_name: str = "",
+                      source_scene: str, source_key: str = "") -> None:
+    """写入一条文件解析记录（去重同 original_path+source_scene）。"""
+    method = parse_method[:16]
+    if method not in {"rule", "ai", "ai_title_only"}:
+        method = "rule"
+    scene = source_scene[:24]
+    if scene not in {"search", "inspect", "ai_review", "ai_parse", "transfer"}:
+        scene = "search"
+    with _lock, _conn(db_path) as c:
+        c.execute(
+            """INSERT INTO file_parses (original_path, original_name,
+                   parse_method, structured_info, canonical_name,
+                   source_scene, source_key)
+               VALUES (?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(original_path, source_scene) DO UPDATE SET
+                   parse_method = excluded.parse_method,
+                   structured_info = excluded.structured_info,
+                   canonical_name = excluded.canonical_name,
+                   source_key = excluded.source_key""",
+            (original_path[:300], original_name[:300], method,
+             json.dumps(structured_info, ensure_ascii=False),
+             canonical_name[:300], scene, source_key[:200]),
+        )
 
 
 # ---- 通用 KV 缓存（搜索结果 / 分享详情，TTL 过期） ----

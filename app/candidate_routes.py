@@ -25,12 +25,12 @@ import time
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
-from . import config, db, settings
-from . import llm
+from . import config, db, llm, settings
 from .auth import require_user
 from .matcher import _title_keys_similarity
 from .name_parser import canonical_with_context, spec_dict
 from .name_parser import parser as name_parser
+from .search_chains import BaseSearchChain, AISearchChain  # 需求第 3 条：普通链/AI 链
 from .tmdb import fetch_meta
 from .providers.search import SHARE_URL_RE
 from .providers.quark import QuarkDriveProvider
@@ -183,14 +183,17 @@ async def candidates_search(request: Request, vtype: str = "movie", id: str = ""
                 status_code=429)
     db.incr_search_count(config.DB_PATH, user["id"])
     user_cookie = db.load_user_cookie(config.DB_PATH, user["id"]) or ""
-    meta, cands, errors, keyword = await candidate_service.search(
-        vtype, id, keyword=kw, disks=disk_list, cookie=user_cookie)
-    # "网盘中已有 N 项"实时补算：不依赖搜索缓存内容（detail 可能来自 1 天前
-    # 的缓存），缓存命中与否两条路径都覆盖。计数进 existing_count（卡片 badge
-    # 直显），逐文件 exists 标志供"查看内容"弹窗直接渲染绿勾——有效候选的
-    # detail 已含完整文件列表，点开弹窗无需再解析分享。
-    # 匹配规则（需求第 9 条）：精确大小匹配 + 粗略影片名匹配（转存后文件
-    # 已智能重命名为规范名，同名判断失效）
+    # 需求第 3 条：普通链 vs AI 链——后端一体化，前端无感
+    chain = AISearchChain() if llm.configured() else BaseSearchChain()
+    season = None
+    if id and vtype == "series":
+        # 锚定模式：从 URL 参数或 TMDB 推断季数
+        season = 1  # 默认 S01
+    result = await chain.search(kw, vtype=vtype, id=id, season=season,
+                                disks=disk_list, cookie=user_cookie)
+    meta, cands, errors, keyword = (result["meta"], result["cands"],
+                                     result["errors"], result["keyword"])
+    # "网盘中已有 N 项"实时补算
     existing = await _drive_existing_index(user_cookie, user["id"])
     for c in cands:
         d = getattr(c, "detail", None)
@@ -200,7 +203,8 @@ async def candidates_search(request: Request, vtype: str = "movie", id: str = ""
             nm = f.get("name") or ""
             if existing:
                 f["exists"] = existing.match(nm, f.get("size") or 0)
-            # 规范文件名：无标题名结合搜索名/分享名/文件夹名兜底
+            # canonical 已由链类算好（AI 链用 AI 元数据拼，Normal 链用规则），
+            # 此处兜底防止链类漏算
             f.setdefault("canonical", canonical_with_context(
                 nm, search_title=keyword or "",
                 share_title=getattr(c, "title", "") or "",

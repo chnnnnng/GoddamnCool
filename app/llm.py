@@ -16,6 +16,8 @@ LLM_MODEL）后启用；三项任一为空即视为未配置，所有 AI 端点�
 import hashlib
 import json
 import logging
+import os
+import re
 
 import httpx
 
@@ -113,7 +115,64 @@ def _int_or_none(v):
     return int(v)
 
 
+# ---- 文件名合并：同前缀仅数字不同的分组合并为模板 ----
+
+_NUMERIC_RE = re.compile(r"^(.*?)(\d+)(.*?)(\.[^.]+)$", re.IGNORECASE)
+
+
+def compact_file_paths(paths: list[str]) -> tuple[list[str], list[list[int]]]:
+    """把文件路径按 basename 的数字片段合并：
+
+    输入 ["狂飙.S01E01.mp4", "狂飙.S01E02.mp4", "狂飙.S01E12.mp4",
+          "花絮.mp4", "The.Knockout.S01E01.mkv"]
+
+    合并为 ["狂飙.S01E{{01,02,12}}.mp4", "花絮.mp4", "The.Knockout.S01E01.mkv"]
+    映射  [[0,1,2], [3], [4]]
+
+    合并条件：basename 拆成 (prefix, num, suffix, ext) 后，
+    prefix/suffix/ext 全相同、仅 num 不同（num 长度必须一致，避免 01 vs 1 混）。
+    合并后返回 (紧凑路径数组, 每个紧凑条目对应的原始下标列表)。"""
+    # 先按目录前缀分组（不同目录不合并，避免跨目录混淆）
+    by_dir: dict[str, list[tuple[int, str]]] = {}
+    for i, p in enumerate(paths):
+        dirname = p.rsplit("/", 1)[0] if "/" in p else ""
+        by_dir.setdefault(dirname, []).append((i, p))
+    compact: list[str] = []
+    mapping: list[list[int]] = []
+    for dirname, entries in by_dir.items():
+        # 按可合并键分组
+        groups: dict[tuple[str, str, str, int], list[tuple[int, str, str]]] = {}
+        singles: list[tuple[int, str]] = []
+        for orig_i, p in entries:
+            name = os.path.basename(p)
+            m = _NUMERIC_RE.match(name)
+            if m:
+                prefix, num, suffix, ext = m.groups()
+                key = (prefix, suffix, ext, len(num))  # 同长度才合
+                groups.setdefault(key, []).append((orig_i, num, p))
+            else:
+                singles.append((orig_i, p))
+        # 可合并组：至少 2 条才合
+        for key, items in groups.items():
+            if len(items) >= 2:
+                prefix, suffix, ext, _ = key
+                nums = sorted({n for _, n, _ in items})
+                merged_basename = f"{prefix}{{{','.join(nums)}}}{suffix}{ext}"
+                full = (dirname + "/" if dirname else "") + merged_basename
+                compact.append(full)
+                mapping.append([orig_i for orig_i, _, _ in items])
+            else:
+                orig_i, _, p = items[0]
+                singles.append((orig_i, p))
+        for orig_i, p in singles:
+            compact.append(p)
+            mapping.append([orig_i])
+    return compact, mapping
+
+
 # ---- AI 精选 + 文件名解析（一次调用完成两项任务） ----
+
+REVIEW_SKILL_VERSION = 3  # v3: AI 返回结构化元数据，服务端拼规范名；v2 直接吐 canonical
 
 REVIEW_SKILL = """你是网盘影视资源搜索结果的甄别与解析助手。根据目标影片信息与候选资源列表，完成两项任务：
 
@@ -123,21 +182,30 @@ REVIEW_SKILL = """你是网盘影视资源搜索结果的甄别与解析助手�
 3. 去重：内容实质相同的候选归为一组，每组仅推荐一个最佳候选（其余标记 dup_of 指向组内最佳的 index）；
 4. 解析：从候选标题中提取影片名（中文优先）、年份、季数。
 
-二、解析文件名（仅当候选附带 files 数组时）：对每个文件路径（含所在目录）解析影片信息，并生成规范文件名：
-- canonical 格式：Title.SxxEyy.Year.Resolution.Source.Codec.Audio-Group.ext，点分，保留原扩展名，缺某项则省略，不要集标题；
-- Title：结合搜索关键词/分享标题/文件所在目录推断，中文优先（纯数字等无标题文件也须尽力给出），确实无法判断时可用原文或拼音；
-- season/episode：从文件名或所在目录推断（如目录"第三季"+文件名"06" → season=3, episode=6）。
+二、解析文件名（仅当候选附带 files 数组时）：files 是合并后的模板路径，
+每一条模板代表一组同前缀仅数字不同的文件（如 "S01E{{01,02,12}}" 代表 01/02/12 三集），
+ci 为该模板在候选 files 数组中的下标。对每个模板返回：
+- title：推断的影片中文名（中文优先，实在无法判断时可给拼音或原文）；
+- season / episode / year：从目录/路径提取的整数或 null；
+- resolution：如 "2160p" / "1080p" / "720p"；
+- source：如 "WEB-DL" / "BluRay" / "WebRip" / "DVDRip"；
+- codec：如 "H.265" / "H.264" / "HEVC"；
+- audio：音频编码字符串（如 "Atmos" / "DDP5.1"）或 null；
+- group：出品/发布组（如 "BlackTV" / "CHD"）或 null。
+
+⚠️ 不要再输出 canonical 规范名字符串——服务端会用你给的元数据自动拼接。
 
 只输出 JSON，不要输出任何其他内容，格式：
-{"items":[{"index":0,"keep":true,"score":85,"dup_of":null,"reason":"一句话中文理由","title":"影片名","year":2023,"season":1,"files":[{"i":0,"season":1,"episode":1,"canonical":"Title.S01E01.2023.2160p.WEB-DL.H.265.AAC.mp4"}]}]}
+{"items":[{"index":0,"keep":true,"score":85,"dup_of":null,"reason":"一句话中文理由","title":"影片名","year":2023,"season":1,"files":[{"ci":0,"title":"影片名","season":1,"episode":null,"year":2023,"resolution":"2160p","source":"WEB-DL","codec":"H.265","audio":"Atmos","group":"BlackTV"}]}]}
 字段说明：
 - index：输入 candidates 数组下标，必须逐一覆盖所有候选；
 - keep：false 表示剔除（此时 reason 必填说明原因）；
 - score：0~100 整数，被剔除的候选可为 null；
 - dup_of：与哪个候选重复（填对方的 index），自身是组内最佳或无重复时为 null；
 - title/year/season：从候选标题解析，无法判断时为 null；
-- files：仅对输入带 files 的候选输出；i 为该候选 files 数组下标，必须逐一覆盖其全部文件；
-  season/episode 为整数或 null；canonical 为规范文件名字符串（确实无法给出时为 null）。"""
+- files：仅对输入带 files 的候选输出；ci 为该候选的 files 数组下标，
+  必须逐一覆盖其全部 files；title 字段对无标题文件可尽力给出，
+  其他字段无法判断时为 null。"""
 
 
 async def review_candidates(cands: list[dict], *, keyword: str = "",
@@ -179,13 +247,12 @@ async def review_candidates(cands: list[dict], *, keyword: str = "",
 
 def _validate_review(data, n: int,
                      files_counts: list[int] | None = None) -> list[dict]:
-    """校验模型输出：下标越界/类型不符的条目丢弃，字段截断规整。
-
-    files_counts[i] 为第 i 个候选输入的文件数（用于 files[].i 越界校验）。"""
+    """校验模型输出（v3：files[].ci 对应紧凑后数组下标，
+    字段为结构化元数据而非 canonical 字符串）。"""
     if not isinstance(data, dict) or not isinstance(data.get("items"), list):
         return []
     out: list[dict] = []
-    for it in data["items"]:  # 不预设条数上限：越界下标由下方校验过滤
+    for it in data["items"]:
         if not isinstance(it, dict):
             continue
         idx = _int_or_none(it.get("index"))
@@ -198,13 +265,31 @@ def _validate_review(data, n: int,
             for pf in it["files"]:
                 if not isinstance(pf, dict):
                     continue
-                fi = _int_or_none(pf.get("i"))
-                if fi is None or not (0 <= fi < fcount):
+                ci = _int_or_none(pf.get("ci"))
+                if ci is None or not (0 <= ci < fcount):
+                    # 兼容 v2：ai-review 接口下游用，fallback i 字段
+                    ci = _int_or_none(pf.get("i"))
+                if ci is None or not (0 <= ci < fcount):
                     continue
+                audio = pf.get("audio")
+                group = pf.get("group")
                 files.append({
-                    "i": fi,
+                    "ci": ci,
+                    "i": ci,  # 向后兼容
+                    "title": (str(pf["title"]).strip()[:100]
+                              if pf.get("title") else None),
                     "season": _int_or_none(pf.get("season")),
                     "episode": _int_or_none(pf.get("episode")),
+                    "year": _int_or_none(pf.get("year")),
+                    "resolution": (str(pf["resolution"]).strip()[:30]
+                                   if pf.get("resolution") else None),
+                    "source": (str(pf["source"]).strip()[:30]
+                               if pf.get("source") else None),
+                    "codec": (str(pf["codec"]).strip()[:30]
+                              if pf.get("codec") else None),
+                    "audio": str(audio).strip()[:30] if audio else None,
+                    "group": str(group).strip()[:30] if group else None,
+                    # canonical 字段已不再由 AI 返回，但下游仍可能读（fallback）
                     "canonical": (str(pf["canonical"]).strip()[:300]
                                   if pf.get("canonical") else None),
                 })

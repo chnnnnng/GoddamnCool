@@ -261,7 +261,7 @@ def test_chat_payload_qwen_disables_thinking():
 
 
 def test_validate_review_files_bounds():
-    """逐文件解析输出校验：文件下标越界丢弃，字段规整。"""
+    """逐文件解析输出校验：文件下标越界丢弃，字段规整（含 v3 元数据字段）。"""
     data = {"items": [{"index": 0, "keep": True, "files": [
         {"i": 0, "season": 1, "episode": 2, "canonical": "A.S01E02.mp4"},
         {"i": 9, "canonical": "B.mp4"},   # 越界 → 丢弃
@@ -269,8 +269,14 @@ def test_validate_review_files_bounds():
     ]}]}
     out = llm._validate_review(data, 1, [1])
     assert len(out[0]["files"]) == 1
-    assert out[0]["files"][0] == {"i": 0, "season": 1, "episode": 2,
-                                  "canonical": "A.S01E02.mp4"}
+    pf = out[0]["files"][0]
+    assert pf["ci"] == 0 and pf["i"] == 0  # 兼容字段
+    assert pf["season"] == 1 and pf["episode"] == 2
+    assert pf["canonical"] == "A.S01E02.mp4"
+    # v3 新增元数据字段（mock 里没给 → None）
+    assert pf["title"] is None and pf["year"] is None
+    assert pf["resolution"] is None and pf["source"] is None
+    assert pf["codec"] is None and pf["audio"] is None and pf["group"] is None
 
 
 @pytest.mark.usefixtures("tmp_db", "llm_on")
