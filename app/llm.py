@@ -204,7 +204,7 @@ SKIM_SKILL = """你是网盘影视资源搜索结果的甄别助手。根据目�
 
 ## 输入
 每个候选含 title（分享标题）、video_count（视频数）、total_size_h（总体积）、
-files_sample（2~3 条真实文件路径样例，展示资源特征）。
+files_sample（部分条真实文件路径样例，展示资源特征）。
 
 ## 任务
 对每个候选输出：
@@ -216,7 +216,7 @@ files_sample（2~3 条真实文件路径样例，展示资源特征）。
 ## 甄选原则
 1. 剔除与目标影片**无关**的（如标题为不同片名、明显是花絮/预告片/电影版但目标是剧集）
 2. 剔除疑似**垃圾**（凑数压缩包、广告、挂羊头卖狗肉）
-3. **当搜索目标未指定具体季数时，单季条目不视为不匹配**，正常评分即可
+3. **当搜索目标未指定具体季数时，单季条目不视为不匹配**，正常评分即可，但全季条目优先
 4. 质量维度：清晰度、集数完整度、体积合理性、来源可靠性
 5. 评分倾向：片名高度匹配 + 资源完整 → 90+；片名匹配但资源中等 → 70~80；存疑 → 50~60；明显不匹配 → keep=false
 
@@ -226,34 +226,36 @@ files_sample（2~3 条真实文件路径样例，展示资源特征）。
 - index：输入数组下标，逐一覆盖
 - keep：false 表示不值得进一步解析
 - score：keep=true 必填 0~100 整数；keep=false 可为 null
-- reason：keep=false 必填说明原因；keep=true 简短即可
+- reason：十分精简的决策考量原因
 """
 
-DEEP_PARSE_SKILL_VERSION = 1
-DEEP_PARSE_SKILL = """你是网盘影视资源文件名解析助手。输入一个选定候选的完整文件路径列表（已用最长公共前缀压缩为模板），对每一条模板输出结构化元数据。
+DEEP_PARSE_SKILL_VERSION = 2
+DEEP_PARSE_SKILL = """你是网盘影视资源文件名解析助手。输入多个选定候选的文件路径数组（已用最长公共前缀压缩为模板），对每一条模板输出结构化元数据。
 
 ## 输入格式
-paths 数组的每个元素是一条压缩模板，如：
-  "S01E{{01,02,03}}.中英字幕.BDrip.1080p-人人影视.mp4"
-  变化部分用 {{a,b,c}} 枚举，前缀和后缀是所有变体共有的固定部分。
+candidates 是一个 JSON 数组，每个元素含：
+  - title：候选分享标题
+  - paths：该候选的压缩模板数组，如：
+      "{{S01E01, S01E02, S01E03}}.中英字幕.BDrip.1080p-人人影视.mp4"
+    变化部分用 {{a,b,c}} 枚举。
 
 ## 输出
-对输入数组每一条模板（按对应数组下标 ci 标识）输出：
-- ci: 数组下标（0 起，必须与输入对应）
-- title: 推断的影片中文名（从候选标题 + 路径上下文综合判断）
+对每个候选按输入顺序（index 即输入 candidates 数组下标）输出 files 数组，
+每一条模板返回：
+- ci: paths 数组下标（0 起，必须严格对应）
+- title: 推断的影片中文名
 - season: 季数（整数或 null）
-- episode: 集数（若模板整体代表一集可填；若模板枚举多集可为 null，由后端逐枚举项展开）
+- episode: 集数（整数或 null；若模板枚举多集可填 null，后端逐枚举项展开）
 - year: 年份（整数或 null）
-- resolution: 如 "2160p" / "1080p" / "720p"（或从路径里提取 "BDrip"/"WEB-DL" 等标记）
-- source: 如 "WEB-DL" / "BluRay" / "WebRip" / "DVDRip" / "HDTV"
-- codec: 如 "H.265" / "H.264" / "HEVC" / null
+- resolution: 如 "2160p" / "1080p" / "720p" / null
+- source: 如 "WEB-DL" / "BluRay" / "WebRip" / "DVDRip" / null
+- codec: 如 "H.265" / "H.264" / null
 - audio: 如 "Atmos" / "DDP5.1" / null
-- group: 发布组名（如 "人人影视" / "CHD" / "WiKi"）或 null
+- group: 发布组名（如 "人人影视" / "CHD"）或 null
 
-⚠️ 不要输出 canonical 规范名字符串——服务端会用你给的元数据自动拼接。
-
-只输出 JSON：
-{"files":[{"ci":0,"title":"绝命毒师","season":1,"episode":null,"year":null,"resolution":"1080p","source":"BDrip","codec":null,"audio":null,"group":"人人影视"}]}
+⚠️ 不要输出 canonical 规范名字符串——服务端自动拼接。
+只输出 JSON，不要其他文字：
+{"items":[{"index":0,"files":[{"ci":0,"title":"绝命毒师","season":1,"episode":null,"year":null,"resolution":"1080p","source":"BDrip","codec":null,"audio":null,"group":"人人影视"}]}]}
 """
 
 
@@ -319,13 +321,12 @@ async def skim_candidates(cands_summary: list[dict], *, keyword: str,
 async def parse_candidates_deep(
     cands_detail: list[dict], *, keyword: str, title: str,
     season: int | None = None) -> list[dict]:
-    """阶段 2：详细解析。
+    """DEEP PARSE：一次性请求解析多个候选的所有 paths 模板。
 
-    cands_detail 每项含 title + paths(LCP 压缩后的完整路径数组)。
-    返回 [{"index", "title", "files": [{"ci", "title", "season", "episode", ...}]}]"""
+    cands_detail 每项含 title + paths(LCP 压缩后的路径数组)。
+    返回 [{"index": 输入下标, "title": ..., "files": [{"ci","title","season",...}]}]"""
     if not cands_detail:
         return []
-    all_files_counts = [len(c.get("paths") or c.get("files") or []) for c in cands_detail]
     payload = {"keyword": keyword, "title": title, "season": season,
                "candidates": cands_detail}
     cache_key = ("llm:deep:%d:%s" % (
@@ -336,108 +337,132 @@ async def parse_candidates_deep(
         log.info("DEEP_PARSE 命中缓存 %s", cache_key)
         return cached
 
-    results: list[dict] = []
-    # 逐个候选单独请求（每个请求的 paths 数量受控，不超限）
-    for ci, cand in enumerate(cands_detail):
-        raw_paths = cand.get("paths") or cand.get("files") or []
-        if not raw_paths:
-            results.append({"index": ci, "title": cand.get("title"), "files": []})
-            continue
-        single = [{"title": cand.get("title"), "paths": raw_paths}]
-        user = ("目标影片：{}\n\n候选标题：{}\n\n文件路径模板数组（JSON 数组）：\n{}"
-                "\n\n请解析每一条模板并输出 JSON。").format(
-            f"{title or keyword}" + (f" 第 {season} 季" if season else ""),
-            cand.get("title") or "",
-            json.dumps(raw_paths, ensure_ascii=False))
-        raw = await chat([{"role": "system", "content": DEEP_PARSE_SKILL},
-                          {"role": "user", "content": user}])
-        data = _extract_json(raw)
-        files: list[dict] = []
-        if isinstance(data, dict) and isinstance(data.get("files"), list):
-            for pf in data["files"]:
-                if not isinstance(pf, dict):
-                    continue
-                pf_ci = _int_or_none(pf.get("ci"))
-                if pf_ci is None or not (0 <= pf_ci < len(raw_paths)):
-                    continue
-                files.append({
-                    "ci": pf_ci,
-                    "i": pf_ci,
-                    "title": str(pf.get("title") or "").strip()[:100] or None,
-                    "season": _int_or_none(pf.get("season")),
-                    "episode": _int_or_none(pf.get("episode")),
-                    "year": _int_or_none(pf.get("year")),
-                    "resolution": str(pf.get("resolution") or "").strip()[:30] or None,
-                    "source": str(pf.get("source") or "").strip()[:30] or None,
-                    "codec": str(pf.get("codec") or "").strip()[:30] or None,
-                    "audio": str(pf.get("audio") or "").strip()[:30] or None,
-                    "group": str(pf.get("group") or "").strip()[:30] or None,
-                })
-        results.append({"index": ci, "title": cand.get("title"), "files": files})
+    n = len(cands_detail)
+    user = ("目标影片：{}\n\n选定候选文件路径模板数组（JSON）：\n{}"
+            "\n\n请解析每一条模板并输出 JSON items 数组。").format(
+        f"{title or keyword}" + (f" 第 {season} 季" if season else ""),
+        json.dumps(cands_detail, ensure_ascii=False))
+    raw = await chat([{"role": "system", "content": DEEP_PARSE_SKILL},
+                      {"role": "user", "content": user}])
+    data = _extract_json(raw)
 
-    db.set_cache(config.DB_PATH, cache_key, results, _CACHE_TTL)
-    return results
+    out: list[dict] = []
+    if isinstance(data, dict) and isinstance(data.get("items"), list):
+        # 规整：对每个输入 cands_detail[i] 找对应 items 条目
+        for ci in range(n):
+            cand = cands_detail[ci]
+            expected_paths = cand.get("paths") or cand.get("files") or []
+            entry: dict | None = None
+            for it in data["items"]:
+                if isinstance(it, dict) and _int_or_none(it.get("index")) == ci:
+                    entry = it
+                    break
+            files_out: list[dict] = []
+            if entry and isinstance(entry.get("files"), list):
+                seen = set()
+                for pf in entry["files"]:
+                    if not isinstance(pf, dict):
+                        continue
+                    pf_ci = _int_or_none(pf.get("ci"))
+                    if pf_ci is None or pf_ci in seen:
+                        continue
+                    if not (0 <= pf_ci < len(expected_paths)):
+                        continue
+                    seen.add(pf_ci)
+                    files_out.append({
+                        "ci": pf_ci,
+                        "i": pf_ci,
+                        "title": str(pf.get("title") or "").strip()[:100] or None,
+                        "season": _int_or_none(pf.get("season")),
+                        "episode": _int_or_none(pf.get("episode")),
+                        "year": _int_or_none(pf.get("year")),
+                        "resolution": str(pf.get("resolution") or "").strip()[:30] or None,
+                        "source": str(pf.get("source") or "").strip()[:30] or None,
+                        "codec": str(pf.get("codec") or "").strip()[:30] or None,
+                        "audio": str(pf.get("audio") or "").strip()[:30] or None,
+                        "group": str(pf.get("group") or "").strip()[:30] or None,
+                    })
+            out.append({"index": ci, "title": cand.get("title"), "files": files_out})
+    else:
+        # 模型输出异常 → 全空
+        out = [{"index": ci, "title": c.get("title"), "files": []}
+               for ci, c in enumerate(cands_detail)]
+
+    db.set_cache(config.DB_PATH, cache_key, out, _CACHE_TTL)
+    return out
 
 
-# ---- 兼容前端 AI-review 端点：保留旧版单次调用 API ----
-
-LEGACY_REVIEW_SKILL = """你是网盘影视资源搜索结果的甄别与解析助手。根据目标影片信息与候选资源列表，完成两项任务：
-
-一、精选（对每个候选）：
-1. 筛选：剔除与目标影片无关、或疑似垃圾内容（预告片/花絮/广告/凑数压缩包/挂羊头卖狗肉）的候选（keep=false，reason 必填）；
-2. 评分：对保留候选给出 0~100 的推荐分，综合考量片名匹配度、清晰度规格、资源完整性（集数/体积）、发布时间与存活状态；
-3. 去重：内容实质相同的候选归为一组，每组仅推荐一个最佳候选（其余标记 dup_of 指向组内最佳的 index）；
-4. 解析：从候选标题中提取影片名（中文优先）、年份、季数。
-
-二、解析文件名（仅对 keep=true 且输入带 files 的候选需要解析）：
-files 是文件名路径数组，ci 为其下标。对每个文件返回：
-- title：推断的影片中文名（中文优先）；
-- season / episode / year：从路径提取的整数或 null；
-- resolution / source / codec / audio / group：路径中能识别的规格标记，无法判断为 null。
-
-⚠️ 不要再输出 canonical 规范名字符串——服务端会自动拼接。
-
-只输出 JSON，格式：
-{"items":[{"index":0,"keep":true,"score":85,"dup_of":null,"reason":"一句话中文理由","title":"影片名","year":2023,"season":1,
-"files":[{"ci":0,"title":"影片名","season":1,"episode":null,"year":2023,"resolution":"2160p","source":"WEB-DL","codec":"H.265","audio":"Atmos","group":"BlackTV"}]}]}
-- index：输入下标，逐一覆盖所有候选；keep=false 或无 files 的候选 files 字段给 []。
-- 未指定季数时单季条目不视为不匹配，正常评分即可。"""
-
-LEGACY_REVIEW_SKILL_VERSION = 7  # 和 AISearchChain 的两阶段解耦，独立版本
-
+# ---- 兼容前端 AI-review 端点：两阶段一体化封装 ----
 
 async def review_candidates(cands: list[dict], *, keyword: str = "",
                             title: str = "", season: int | None = None) -> list[dict]:
-    """旧版单次 AI 调用，供前端 ai-review 端点使用。"""
-    payload = {"keyword": keyword, "title": title, "season": season,
-               "candidates": cands}
-    cache_key = ("llm:review:%d:%s" % (
-        LEGACY_REVIEW_SKILL_VERSION, hashlib.sha256(
-            json.dumps(payload, ensure_ascii=False, sort_keys=True)
-            .encode("utf-8")).hexdigest()))
-    if (cached := db.get_cache(config.DB_PATH, cache_key)) is not None:
-        log.info("AI 精选命中缓存 %s", cache_key)
-        return cached
-    ctx = []
-    if title:
-        ctx.append(f"影片：{title}")
-    if season is not None:
-        ctx.append(f"目标季数：第 {season} 季")
-    if keyword:
-        ctx.append(f"搜索关键词：{keyword}")
-    user = ("目标影片信息：{}\n\n候选列表（JSON 数组，index 即下标，"
-            "附 files 的候选需逐文件解析）：\n{}"
-            "\n\n请按 skill 要求输出 JSON。").format(
-        "；".join(ctx) or "（无，仅凭候选标题判断）",
-        json.dumps(cands, ensure_ascii=False))
-    raw = await chat([{"role": "system", "content": LEGACY_REVIEW_SKILL},
-                      {"role": "user", "content": user}])
-    files_counts = [len(c.get("files") or []) for c in cands]
-    items = _validate_review(_extract_json(raw), len(cands), files_counts)
-    if not items:
-        raise LLMError("模型输出的结果列表为空或全部无效")
-    db.set_cache(config.DB_PATH, cache_key, items, _CACHE_TTL)
-    return items
+    """前端 ai-review 端点入口：SKIM 概要甄选 → 选 keep=true 候选 →
+    DEEP PARSE 批量解析 → 返回规整 items（格式同旧版，前端无需改）。"""
+    # 1. SKIM：所有候选概要
+    summary = []
+    for c in cands:
+        fs = c.get("files") or []
+        summary.append({
+            "title": c.get("title"),
+            "video_count": c.get("video_count"),
+            "total_size_h": c.get("total_size_h"),
+            "files_sample": [f.get("path") or f.get("name") or "" for f in fs[:3]],
+        })
+    skims = await skim_candidates(summary, keyword=keyword, title=title, season=season)
+
+    # 2. 挑 keep=true 且有 files 的候选，全部走 DEEP PARSE（批量一次请求）
+    deep_send: list[dict] = []
+    deep_meta: list[tuple[int, int]] = []  # (deep_idx, 原 cands 下标)
+    for send_i, sk in enumerate(skims):
+        if not sk["keep"]:
+            continue
+        c = cands[send_i]
+        fs = c.get("files") or []
+        if not fs:
+            continue
+        paths = [f.get("path") or f.get("name") or "" for f in fs]
+        deep_send.append({"title": c.get("title"), "paths": paths})
+        deep_meta.append((len(deep_send) - 1, send_i))
+
+    deep_results: list[dict] = []
+    if deep_send:
+        try:
+            deep_results = await parse_candidates_deep(
+                deep_send, keyword=keyword, title=title, season=season)
+        except LLMError:
+            deep_results = []
+
+    # 3. 规整成前端期望的 items 格式（含 files[].i 字段）
+    deep_by_idx = {(dm[0]): dm[1] for dm in deep_meta}  # deep_idx → cands_idx
+    out: list[dict] = []
+    for sk in skims:
+        ci = sk["index"]
+        c = cands[ci]
+        keep = sk["keep"]
+        item = {
+            "index": ci,
+            "keep": keep,
+            "score": sk["score"],
+            "dup_of": None,
+            "reason": sk["reason"],
+            "title": sk["title"],
+            "year": None,
+            "season": None,
+            "files": [],
+        }
+        if keep:
+            # 找 deep_result
+            for dm0, dm1 in deep_meta:
+                if dm1 == ci:
+                    for dr in deep_results:
+                        if dr["index"] == dm0:
+                            for pf in dr.get("files", []):
+                                # 补上前端需要的 .i 字段（= ci，下标）
+                                item["files"].append({**pf, "i": pf.get("ci")})
+                            break
+                    break
+        out.append(item)
+    return out
 
 
 def _validate_review(data, n: int,

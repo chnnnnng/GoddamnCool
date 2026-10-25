@@ -465,16 +465,40 @@ async def candidates_ai_review(request: Request):
             season=season)
     except llm.LLMError as e:
         return JSONResponse({"detail": f"AI 处理失败: {e}"}, status_code=502)
-    # 逐文件补充：规范名来源标记 + 合并原名/规范名的规格（徽标展示用，
-    # 中文名常带 中英双字/Atmos 等字幕音轨信息，规范名可能带分辨率/来源）
+    # 逐文件拼 canonical + 标记来源 + 合并规格
     for it in items:
         cand = cands[it["index"]] if it["index"] < len(cands) else {}
         raw_files = cand.get("files") or []
         for pf in it.get("files") or []:
             i = pf.get("i")
             orig = raw_files[i]["path"] if isinstance(i, int) and i < len(raw_files) else ""
-            pf["source"] = "ai" if pf.get("canonical") else None
-            pf["spec"] = _spec_merge(orig, pf.get("canonical") or "")
+            canonical = ""
+            if orig:
+                info = name_parser.parse(os.path.basename(orig))
+                # 用 AI 返回的规格元数据增强 info（覆盖 path 解析不到的字段）
+                ai_res = pf.get("resolution") or info.resolution
+                ai_src = pf.get("source") or info.source
+                ai_codec = pf.get("codec") or info.codec
+                ai_audio = pf.get("audio") or (info.audio[0] if info.audio else None)
+                ai_grp = pf.get("group") or info.group  # info.group 是 str 类型
+                info.resolution = ai_res  # str
+                info.source = ai_src       # str
+                if ai_codec:
+                    info.codec = ai_codec  # str（name_parser.canonical 里当 str 用）
+                if ai_audio:
+                    info.audio = [ai_audio]  # list[str]
+                if ai_grp:
+                    info.group = ai_grp   # str（name_parser.canonical 里直接拼接）
+                canonical = name_parser.canonical(
+                    info,
+                    title=pf.get("title") or info.title or info.title_en,
+                    season=pf.get("season") if pf.get("season") is not None else info.season,
+                    episode=pf.get("episode") if pf.get("episode") is not None else info.episode,
+                    year=pf.get("year") if pf.get("year") is not None else info.year,
+                )
+            pf["canonical"] = canonical
+            pf["source"] = "ai" if canonical else None
+            pf["spec"] = _spec_merge(orig, canonical)
     return {"items": items}
 
 

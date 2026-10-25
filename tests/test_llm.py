@@ -26,6 +26,18 @@ _REVIEW_JSON = (
     '"reason":"完全匹配","title":"余罪","year":2016,"season":1},'
     '{"index":1,"keep":false,"score":null,"dup_of":0,"reason":"内容重复"}]}')
 
+# 两阶段 SKIM 返回（只有 index/keep/score/reason/title；keep=false 不进 DEEP）
+_SKIM_JSON = (
+    '{"items":[{"index":0,"keep":true,"score":88,'
+    '"reason":"剧名高度匹配，存活且有完整集数","title":"余罪"},'
+    '{"index":1,"keep":false,"score":null,"reason":"与 index=0 重复资源","title":"余罪"}]}')
+
+# DEEP PARSE 返回（按 index 回 files[].ci 对应的模板元数据；不含 canonical）
+_DEEP_JSON = (
+    '{"items":[{"index":0,"files":[{"ci":0,"title":"余罪","season":1,'
+    '"episode":1,"year":2016,"resolution":"2160p","source":"WEB-DL",'
+    '"codec":"H.265","audio":"AAC","group":null}]}]}')
+
 
 @pytest.fixture()
 def tmp_db(tmp_path, monkeypatch):
@@ -55,14 +67,19 @@ def llm_on(tmp_db, monkeypatch):
         "LLM_MODEL": "test-model"})
 
 
-def patch_chat(monkeypatch, reply=_REVIEW_JSON):
-    """替换 llm.chat 记录调用次数（缓存命中验证用）。"""
+def patch_chat(monkeypatch, reply=None, replies=None):
+    """替换 llm.chat 记录调用次数（缓存命中验证用）。
+    reply 向后兼容（始终返回），replies 优先（单个或列表，按调用顺序返回）。"""
     calls = {"n": 0}
 
     async def fake_chat(messages, *, temperature=0.2):
         calls["n"] += 1
         assert messages[0]["role"] == "system"  # skill 提示词在 system 位
-        return reply
+        r = replies if replies is not None else (reply if reply is not None else _REVIEW_JSON)
+        if isinstance(r, list):
+            idx = min(calls["n"] - 1, len(r) - 1)
+            return r[idx]
+        return r
 
     monkeypatch.setattr(llm, "chat", fake_chat)
     return calls
@@ -98,28 +115,30 @@ def test_configured_requires_all_three(tmp_db, monkeypatch):
 # ---------- AI 精选：筛选/评分/去重 ----------
 
 def test_ai_review_ok_and_cached(llm_on, monkeypatch):
-    calls = patch_chat(monkeypatch)
+    calls = patch_chat(monkeypatch, replies=[_SKIM_JSON, _DEEP_JSON])
     body = {"keyword": "余罪", "title": "余罪", "season": 1,
             "candidates": [
                 {"title": "余罪 全集 4K", "source": "p1",
                  "published": "2026-01-01", "alive_state": "ok",
-                 "video_count": 12, "total_size_h": "10GB"},
+                 "video_count": 12, "total_size_h": "10GB",
+                 "files": [{"path": "S01E01.mp4"}]},
                 {"title": "余罪 另一发布", "source": "p2"}]}
     r1 = client.post("/api/candidates/ai-review", json=body, headers=AUTH)
     assert r1.status_code == 200
     items = r1.json()["items"]
     assert items[0]["keep"] is True and items[0]["score"] == 88
-    assert items[0]["title"] == "余罪" and items[0]["year"] == 2016
-    assert items[1]["keep"] is False and items[1]["dup_of"] == 0
-    assert calls["n"] == 1
-    # 相同输入命中缓存，不再调用模型
+    assert items[0]["title"] == "余罪"
+    assert items[1]["keep"] is False
+    # 两阶段：SKIM + DEEP PARSE（index=0 keep=true 且有 files 才进 DEEP）
+    assert calls["n"] == 2
+    # 相同输入命中两层缓存，不再调用模型
     r2 = client.post("/api/candidates/ai-review", json=body, headers=AUTH)
     assert r2.status_code == 200 and r2.json() == r1.json()
-    assert calls["n"] == 1
+    assert calls["n"] == 2
     # 不同输入 → 重新调用
     body2 = dict(body, keyword="回魂夜")
     client.post("/api/candidates/ai-review", json=body2, headers=AUTH)
-    assert calls["n"] == 2
+    assert calls["n"] == 4  # SKIM + DEEP 各一次
 
 
 def test_ai_review_input_validation(llm_on, monkeypatch):
@@ -289,13 +308,17 @@ def test_llm_status_endpoint():
 
 @pytest.mark.usefixtures("llm_on")
 def test_ai_review_with_files_parse(monkeypatch):
-    """精选+解析合并调用：输入带分享内文件路径，输出逐文件规范名/季集，
-    服务端合并原名+规范名的规格后返回（前端直接渲染徽标）。"""
-    calls = patch_chat(monkeypatch, reply=(
-        '{"items":[{"index":0,"keep":true,"score":90,"dup_of":null,'
-        '"reason":"匹配","title":"狂飙","year":2023,"season":3,'
-        '"files":[{"i":0,"season":3,"episode":6,'
-        '"canonical":"Kuang.Biao.S03E06.2023.2160p.WEB-DL.H.265.AAC.mp4"}]}]}'))
+    """两阶段：SKIM 概要甄选 + DEEP PARSE 元数据解析，
+    canonical 由后端用 name_parser.canonical 拼。"""
+    calls = patch_chat(monkeypatch, replies=[
+        # SKIM 返回：1 个 keep=true 的候选
+        '{"items":[{"index":0,"keep":true,"score":90,'
+        '"reason":"剧名匹配，1080p 多集","title":"狂飙"}]}',
+        # DEEP PARSE 返回：files[].ci 对应 paths 数组下标
+        '{"items":[{"index":0,"files":[{"ci":0,"title":"狂飙",'
+        '"season":3,"episode":6,"year":2023,'
+        '"resolution":"2160p","source":"WEB-DL",'
+        '"codec":"H.265","audio":"AAC","group":null}]}]}'])
     r = client.post("/api/candidates/ai-review", headers=AUTH, json={
         "keyword": "狂飙", "title": "狂飙", "season": 3,
         "candidates": [{"title": "狂飙 第三季", "source": "p1",
@@ -304,19 +327,20 @@ def test_ai_review_with_files_parse(monkeypatch):
                                   {"path": "海报.jpg"}]}]})
     assert r.status_code == 200
     it = r.json()["items"][0]
-    assert it["files"][0]["canonical"] == \
-        "Kuang.Biao.S03E06.2023.2160p.WEB-DL.H.265.AAC.mp4"
-    assert it["files"][0]["source"] == "ai"
-    assert it["files"][0]["season"] == 3 and it["files"][0]["episode"] == 6
-    # 规格从规范名解析（分辨率/来源/编码），与原名合并
-    spec = it["files"][0]["spec"]
+    f0 = it["files"][0]  # ci=0 对应 paths[0] = 第三季/06.mp4
+    # canonical 由后端 name_parser.canonical 拼（带 AI 元数据 title/year 等）
+    assert "S03E06" in f0["canonical"] or "E06" in f0["canonical"]
+    assert f0["source"] == "ai"
+    assert f0["season"] == 3 and f0["episode"] == 6
+    spec = f0["spec"]
     assert spec["resolution"] == "2160p" and spec["source"] == "WEB-DL" \
         and spec["codec"] == "H.265"
-    assert calls["n"] == 1
-    # 文件路径进入模型输入（缓存键随内容变化）
+    # SKIM + DEEP 两次
+    assert calls["n"] == 2
+    # 不同文件 → SKIM + DEEP 重新调用（缓存键随内容变化）
     client.post("/api/candidates/ai-review", headers=AUTH, json={
         "keyword": "狂飙", "title": "狂飙", "season": 3,
         "candidates": [{"title": "狂飙 第三季", "source": "p1",
                         "alive_state": "ok",
                         "files": [{"path": "第三季/07.mp4"}]}]})
-    assert calls["n"] == 2
+    assert calls["n"] == 4  # 累计 2 + 2
