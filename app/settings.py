@@ -25,6 +25,7 @@ EDITABLE: dict[str, type] = {
     "MATCH_THRESHOLD": float,       # 文件名匹配阈值
     "TRANSFER_DIR": str,            # 转存目标目录名（网盘根目录下）
     "PANSOU_BASE_URL": str,         # PanSou 聚合搜索地址
+    "META_PROVIDER": str,           # 元数据源：tmdb（默认）/ 未来可扩展 douban/omdb
     "TMDB_API_KEY": str,            # TMDB API Key（管理员统一填写，用户不可见）
     "LLM_API_BASE": str,            # 大语言模型 API 地址（OpenAI 兼容，留空禁用 AI 功能）
     "LLM_API_KEY": str,             # 大语言模型 API Key（管理员统一填写，回显打码）
@@ -55,6 +56,7 @@ SETTINGS_META: dict[str, str] = {
     "MATCH_THRESHOLD": "转存时文件名与影片名的匹配阈值（0~1）",
     "TRANSFER_DIR": "默认转存目标目录名（网盘根目录下的文件夹，留空存根目录；用户可在面板自定义）",
     "PANSOU_BASE_URL": "PanSou 聚合搜索服务地址（留空禁用外部搜索）",
+    "META_PROVIDER": "影视元数据源（默认 tmdb；未来可扩展 douban/omdb，需先在 meta/ 下加派生类并注册）",
     "TMDB_API_KEY": "TMDB API Key（32 位十六进制，管理员统一填写，普通用户不可见）",
     "LLM_API_BASE": "大语言模型 API 地址（OpenAI 兼容，如 https://api.openai.com/v1，"
                     "留空禁用 AI 精选/文件名解析等高级功能）",

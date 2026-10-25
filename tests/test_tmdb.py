@@ -69,8 +69,8 @@ def meta_env(monkeypatch, tmp_path):
     path = str(tmp_path / "meta.db")
     db.init(path, Fernet.generate_key().decode())
     monkeypatch.setattr(config, "TMDB_API_KEY", "test-key")
-    monkeypatch.setattr(tmdb_mod, "_host", "")
-    monkeypatch.setattr(tmdb_mod, "_host_ts", 0.0)
+    monkeypatch.setattr(tmdb_mod.tmdb_provider, "_host", "")
+    monkeypatch.setattr(tmdb_mod.tmdb_provider, "_host_ts", 0.0)
     return path
 
 
@@ -174,8 +174,8 @@ async def test_domain_timeout_also_switches_to_ip(meta_env):
 
 async def test_ip_transient_timeout_retried(meta_env, monkeypatch):
     """IP 直连偶发瞬时超时：同一 IP 自动重试一次，不误判为 IP 失效。"""
-    monkeypatch.setattr(tmdb_mod, "_host", "18.155.173.7")
-    monkeypatch.setattr(tmdb_mod, "_host_ts", time.time())
+    monkeypatch.setattr(tmdb_mod.tmdb_provider, "_host", "18.155.173.7")
+    monkeypatch.setattr(tmdb_mod.tmdb_provider, "_host_ts", time.time())
     calls, hosts = [], []
     state = {"failed": False}
 
@@ -193,8 +193,8 @@ async def test_ip_transient_timeout_retried(meta_env, monkeypatch):
 
 async def test_stale_ip_refreshed(meta_env, monkeypatch):
     """缓存的 IP 连不上时：重新拉取 CheckTMDB 最新 IP 并换新重试。"""
-    monkeypatch.setattr(tmdb_mod, "_host", "9.9.9.9")
-    monkeypatch.setattr(tmdb_mod, "_host_ts", time.time())
+    monkeypatch.setattr(tmdb_mod.tmdb_provider, "_host", "9.9.9.9")
+    monkeypatch.setattr(tmdb_mod.tmdb_provider, "_host_ts", time.time())
     calls, hosts = [], []
     m = await tmdb_mod.fetch_meta("tt0848228", "movie", meta_env,
                                   transport=make_transport(calls, hosts,

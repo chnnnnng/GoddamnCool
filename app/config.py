@@ -59,6 +59,9 @@ TMDB_META_TTL: float = float(os.environ.get("TMDB_META_TTL", str(7 * 86400)))
 CHECKTMDB_HOSTS_URL = ("https://cdn.jsdelivr.net/gh/cnwikee/CheckTMDB@main/"
                        "Tmdb_host_ipv4")
 
+# 元数据源选择（admin 可在线切换）。默认 tmdb，未来可扩展 douban/omdb 等。
+META_PROVIDER: str = os.environ.get("META_PROVIDER", "tmdb")
+
 # 外部资源检索（阶段 3）：PanSou 聚合搜索实例（github.com/fish2018/pansou，MIT）。
 # 默认公开实例，可替换为自部署地址；搜索为 JSON 文本级流量，几乎无带宽开销。
 PANSOU_BASE_URL: str = os.environ.get("PANSOU_BASE_URL", "https://so.252035.xyz").rstrip("/")
