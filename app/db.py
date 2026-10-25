@@ -366,7 +366,7 @@ def record_name_issue(db_path: str, name: str, source: str = "search") -> None:
         )
 
 
-def list_name_issues(db_path: str, limit: int = 500) -> list[dict]:
+def list_name_issues(db_path: str, limit: int = 2000) -> list[dict]:
     """解析问题文件名清单（最近出现优先）。"""
     with _lock, _conn(db_path) as c:
         rows = c.execute(

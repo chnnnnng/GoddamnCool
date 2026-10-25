@@ -123,6 +123,11 @@
   white-space: nowrap;
 }
 .bd.code { color: var(--accent); border-color: var(--accent-dim); }
+/* AI 精选徽标（推荐/重复/剔除），色系沿用存活状态语义色 */
+.bd.ai-ok  { color: var(--accent); border-color: var(--accent-dim);
+             background: var(--accent-dim); }
+.bd.ai-dup { color: #b8860b; border-color: #b8860b; }
+.bd.ai-drop { color: var(--bad); border-color: var(--bad); }
 .vstate {
   font-size: .75rem;
   padding: 2px 8px;

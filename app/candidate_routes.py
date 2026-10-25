@@ -27,8 +27,9 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
 from . import config, db, settings
+from . import llm
 from .auth import require_user
-from .matcher import VIDEO_EXTS, parse, parse_file_spec
+from .matcher import VIDEO_EXTS, parse
 from .name_parser import canonical_with_context
 from .name_parser import parser as name_parser
 from .tmdb import fetch_meta
@@ -167,6 +168,7 @@ async def candidates_search(request: Request, vtype: str = "movie", id: str = ""
         "meta": ({"id": meta.id, "title": meta.title, "year": meta.year,
                   "type": meta.type} if meta else None),
         "keyword": keyword,
+        "llm_enabled": llm.configured(),  # AI 精选入口（管理员配置 LLM 后开启）
         "candidates": [{
             "title": c.title, "share_url": c.share_url, "passcode": c.passcode,
             "source": c.source, "published": c.published,
@@ -345,6 +347,103 @@ async def candidates_verify(request: Request):
     return {"results": await candidate_service.verify_links(items)}
 
 
+@router.post("/api/candidates/ai-review")
+async def candidates_ai_review(request: Request):
+    """AI 精选（高级功能，需管理员配置 LLM API）：对当前搜索候选做
+    筛选（剔除无关/垃圾资源）、重排序（推荐分）、去重分组与标题解析。
+
+    只接收候选元数据（标题/来源/发布时间/存活状态/内容摘要计数），
+    不含用户网盘文件列表；结果按输入内容哈希缓存（TTL 1 天），
+    相同输入不重复调用模型。未配置 LLM 时返回 501（前端隐藏入口）。"""
+    _, err = require_user(request)
+    if err:
+        return err
+    if not llm.configured():
+        return JSONResponse({"detail": "管理员未配置 LLM API，AI 功能不可用"},
+                            status_code=501)
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"detail": "请求体必须是 JSON"}, status_code=400)
+    raw = body.get("candidates")
+    if not isinstance(raw, list) or not raw:
+        return JSONResponse({"detail": "candidates 不能为空"}, status_code=400)
+    # 输入规整为小而结构化的元数据（截断防注入与 token 膨胀），上限 30 条
+    cands = []
+    for it in raw[:30]:
+        if not isinstance(it, dict):
+            continue
+        vc = it.get("video_count")
+        cands.append({
+            "title": str(it.get("title") or "")[:200],
+            "source": str(it.get("source") or "")[:60],
+            "published": str(it.get("published") or "")[:20],
+            "alive_state": str(it.get("alive_state") or "")[:16],
+            "video_count": vc if isinstance(vc, int)
+                           and not isinstance(vc, bool) else None,
+            "total_size_h": str(it.get("total_size_h") or "")[:20],
+        })
+    if not cands:
+        return JSONResponse({"detail": "无有效的候选数据"}, status_code=400)
+    season = body.get("season")
+    if season is not None and (isinstance(season, bool)
+                               or not isinstance(season, int)):
+        return JSONResponse({"detail": "season 必须是整数"}, status_code=400)
+    try:
+        items = await llm.review_candidates(
+            cands,
+            keyword=str(body.get("keyword") or "")[:100],
+            title=str(body.get("title") or "")[:200],
+            season=season)
+    except llm.LLMError as e:
+        return JSONResponse({"detail": f"AI 处理失败: {e}"}, status_code=502)
+    return {"items": items}
+
+
+@router.post("/api/candidates/ai-parse")
+async def candidates_ai_parse(request: Request):
+    """AI 兜底解析（高级功能）：对规则解析不出标题的文件名，结合
+    搜索关键词/分享标题/文件夹名上下文批量推断 影片名/季/集。
+
+    输入仅文件名与其上下文（不含用户网盘目录）；结果缓存（TTL 1 天），
+    并将文件名登记到解析问题名单（source=ai）供管理员跟进。"""
+    _, err = require_user(request)
+    if err:
+        return err
+    if not llm.configured():
+        return JSONResponse({"detail": "管理员未配置 LLM API，AI 功能不可用"},
+                            status_code=501)
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"detail": "请求体必须是 JSON"}, status_code=400)
+    raw = body.get("names")
+    if not isinstance(raw, list) or not raw:
+        return JSONResponse({"detail": "names 不能为空"}, status_code=400)
+    names = []
+    for it in raw[:50]:  # 上限 50 个，控制单次调用 token 开销
+        if not isinstance(it, dict):
+            continue
+        name = str(it.get("name") or "").strip()[:300]
+        if not name:
+            continue
+        names.append({
+            "name": name,
+            "search_title": str(it.get("search_title") or "")[:100],
+            "share_title": str(it.get("share_title") or "")[:200],
+            "folder": str(it.get("folder") or "")[:100],
+        })
+    if not names:
+        return JSONResponse({"detail": "无有效的文件名"}, status_code=400)
+    try:
+        items = await llm.parse_names(names)
+    except llm.LLMError as e:
+        return JSONResponse({"detail": f"AI 处理失败: {e}"}, status_code=502)
+    for n in names:  # 登记跟进名单（去重累计），管理员可见 AI 兜底结果覆盖面
+        db.record_name_issue(config.DB_PATH, n["name"], "ai")
+    return {"items": items}
+
+
 @router.get("/task/{task_id}")
 async def task_page(task_id: str):
     return page("task.html")
@@ -363,12 +462,14 @@ def _record_unparsed(name: str, source: str) -> None:
 
 
 def _spec_badges(name: str) -> list[str]:
-    """从文件名提取规格标注（分辨率/来源/编码/音频/字幕/语言），去重保序。"""
-    spec = parse_file_spec(name)
+    """从文件名提取规格标注（分辨率/来源/编码/音频/附加/字幕/语言），去重保序。
+
+    由 MessyNameParser 统一解析（4K→2160p 归一化、HDR/DV/10bit 附加标签、
+    杜比全景声等中文规格词均可识别）。"""
+    p = name_parser.parse(name)
     out: list[str] = []
-    for v in (spec.get("resolution"), spec.get("source"), spec.get("codec"),
-              *spec.get("audio", []), *spec.get("subtitle", []),
-              *spec.get("languages", [])):
+    for v in (p.resolution, p.source, p.codec, *p.audio, *p.extras,
+              *p.subtitle, *p.languages):
         if v and v not in out:
             out.append(v)
     return out

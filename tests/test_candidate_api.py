@@ -921,3 +921,56 @@ def test_manifest_addon_settings_override(tmp_db, monkeypatch):
     assert m["description"] == "自定义描述"
     assert m["logo"] == "https://img.example/logo.png"
 
+
+# ---------- 规格徽标与季集解析统一由 MessyNameParser 提供 ----------
+
+def test_spec_badges_uses_name_parser():
+    """_spec_badges 由 MessyNameParser 解析：4K→2160p 归一化、
+    附加标签（HDR/DV）、中文字幕词均可识别。"""
+    badges = cr._spec_badges(
+        "怪奇物语.S01E01.2016.4K.NF.WEB-DL.DV.HDR.H.265.DDP5.1.chs.mp4")
+    assert badges[0] == "2160p"
+    assert "WEB-DL" in badges and "H.265" in badges
+    assert "DV" in badges and "HDR" in badges and "chs" in badges
+    assert cr._spec_badges("HD2160P×265")[:2] == ["2160p", "H.265"]
+
+
+async def test_inspect_share_name_parser_seasons_and_spec(tmp_db, monkeypatch):
+    """inspect 季集/规格由 MessyNameParser 解析：狂飙01→E01、第11集→E11、
+    规格含附加标签（旧 matcher 覆盖不了的乱七八糟命名）。"""
+    from app import candidate_service as cs_mod
+    from app.providers.base import ShareFile
+
+    class FakeProvider:
+        def __init__(self, cookie=None, db_path=None):
+            pass
+
+        async def get_share_stoken(self, pwd_id, passcode=""):
+            return "st"
+
+        async def list_share_files(self, pwd_id, stoken):
+            return [
+                ShareFile(fid="f1", name="狂飙01.mkv", size=1, is_dir=False,
+                          fid_token="t1", path="狂飙 第三季/狂飙01.mkv"),
+                ShareFile(fid="f2", name="第11集.mp4", size=1, is_dir=False,
+                          fid_token="t2", path="第11集.mp4"),
+                ShareFile(fid="f3",
+                          name="Movie.2016.2160p.WEB-DL.DV.HDR.x265.mp4",
+                          size=1, is_dir=False, fid_token="t3",
+                          path="Movie.2016.2160p.WEB-DL.DV.HDR.x265.mp4"),
+            ]
+
+        async def close(self):
+            pass
+
+    monkeypatch.setattr(cs_mod, "QuarkDriveProvider", FakeProvider)
+    svc = cs_mod.CandidateService(db_path=tmp_db)
+    data = await svc.inspect_share(GOOD_URL, cookie="c=1")
+    files = data["files"]
+    # 排序（季,集,名）：E01 < E11 < 无集数
+    assert [f["episode"] for f in files] == [1, 11, None]
+    assert files[0]["name"] == "狂飙01.mkv"
+    spec = files[2]["spec"]
+    assert spec["resolution"] == "2160p" and spec["source"] == "WEB-DL"
+    assert spec["codec"] == "H.265" and spec["extras"] == ["DV", "HDR"]
+

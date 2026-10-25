@@ -26,6 +26,8 @@ let lastCands = [];
 let lastMeta = null;
 let lastKeyword = '';
 let lastErrors = '';
+let llmEnabled = false;       // 管理员已配置 LLM API（服务端下发标志）
+let aiApplied = false;        // AI 精选结果已应用（排序/徽标生效）
 let verifyTimer = 0;
 let modalCand = null;         // 弹窗当前候选
 let pickedFids = new Set();   // 弹窗内多选的文件 fid
@@ -34,7 +36,7 @@ const $ = (id) => document.getElementById(id);
 const kwEl = $('kw'), btnEl = $('btn'), metaEl = $('meta'), listEl = $('list'),
   diskEl = $('diskchips'), aliveEl = $('alivechips'), msgEl = $('msg'),
   footEl = $('foot'), modalEl = $('modal'), mtitleEl = $('mtitle'),
-  mbodyEl = $('mbody'), mcloseEl = $('mclose');
+  mbodyEl = $('mbody'), mcloseEl = $('mclose'), aiBtnEl = $('btn-ai');
 
 function el(tag, cls, text) {
   const e = document.createElement(tag);
@@ -51,7 +53,7 @@ function labelOf(c) {
   return `S${pad(c.season)}E${pad(c.episode)}`;
 }
 
-/* ---- 规格格式化（后端 parse_file_spec 返回对象：resolution/source/codec/audio/subtitle/languages） ---- */
+/* ---- 规格格式化（后端 MessyNameParser 返回对象：resolution/source/codec/audio/subtitle/languages/extras） ---- */
 function formatSpec(s) {
   if (!s || typeof s !== 'object') return '';
   const parts = [];
@@ -59,21 +61,22 @@ function formatSpec(s) {
   if (s.source) parts.push(s.source);
   if (s.codec) parts.push(s.codec);
   if (s.audio && s.audio.length) parts.push(s.audio.join('/'));
+  if (s.extras && s.extras.length) parts.push(s.extras.join('/'));
   if (s.subtitle && s.subtitle.length) parts.push('字幕' + s.subtitle.join('/'));
   if (s.languages && s.languages.length) parts.push(s.languages.join('/'));
   return parts.join(' · ');
 }
 function aggregateSpec(d) {
-  /* 多个文件的规格各维度去重合并，返回 badge 数组（如 ["4K","WEB-DL","H.265","AAC"]） */
+  /* 多个文件的规格各维度去重合并，返回 badge 数组（如 ["2160p","WEB-DL","H.265","HDR"]） */
   const dims = { resolution: new Set(), source: new Set(), codec: new Set(),
-    audio: new Set(), subtitle: new Set() };
+    audio: new Set(), extras: new Set(), subtitle: new Set() };
   let any = false;
   for (const f of (d.files || [])) {
     const s = f.spec;
     if (!s || typeof s !== 'object') continue;
     any = true;
     for (const k of Object.keys(dims)) {
-      if (k === 'audio' || k === 'subtitle') (s[k] || []).forEach((v) => dims[k].add(v));
+      if (k === 'audio' || k === 'extras' || k === 'subtitle') (s[k] || []).forEach((v) => dims[k].add(v));
       else if (s[k]) dims[k].add(s[k]);
     }
   }
@@ -83,6 +86,7 @@ function aggregateSpec(d) {
   if (dims.source.size) parts.push([...dims.source].join('/'));
   if (dims.codec.size) parts.push([...dims.codec].join('/'));
   if (dims.audio.size) parts.push([...dims.audio].join('/'));
+  if (dims.extras.size) parts.push([...dims.extras].join('/'));
   if (dims.subtitle.size) parts.push('字幕' + [...dims.subtitle].join('/'));
   return parts;
 }
@@ -136,6 +140,11 @@ async function dosearch() {
     lastKeyword = data.keyword || kw;
     if (!kw) kwEl.value = lastKeyword;  // 锚定模式自动回填实际使用的关键词
     lastErrors = (data.errors || '').trim();
+    // 新一轮搜索重置 AI 精选状态（结果缓存于服务端，重搜同关键词会命中）
+    aiApplied = false;
+    for (const c of lastCands) delete c.ai;
+    llmEnabled = !!data.llm_enabled;
+    updateAiBtn();
     renderResults();
     verifyTimer = setTimeout(verifyLinks, 500);
   } catch (e) {
@@ -168,6 +177,103 @@ async function verifyLinks() {
   } catch { /* 兜底失败保持未检测状态 */ }
 }
 
+/* ---- AI 精选（管理员配置 LLM 后可用；结果服务端缓存 1 天） ---- */
+function updateAiBtn() {
+  aiBtnEl.hidden = !llmEnabled || !lastCands.length;
+  aiBtnEl.textContent = aiApplied ? '退出 AI 精选' : 'AI 精选';
+}
+function aiRank(c) {
+  /* AI 排序键：推荐 → 重复组跟随 → 被剔除沉底；同级按推荐分降序 */
+  if (!c.ai || c.ai.keep === undefined) return 3;
+  if (c.ai.keep === false) return 2;
+  return c.ai.dup_of != null ? 1 : 0;
+}
+async function toggleAiReview() {
+  if (aiApplied) {  // 还原：清空 AI 结果，回到服务端原始排序
+    aiApplied = false;
+    for (const c of lastCands) delete c.ai;
+    updateAiBtn();
+    renderResults();
+    return;
+  }
+  aiBtnEl.disabled = true;
+  aiBtnEl.textContent = 'AI 分析中…';
+  try {
+    const data = await api('/api/candidates/ai-review', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        keyword: lastKeyword,
+        title: lastMeta ? lastMeta.title : '',
+        season: curSeason,
+        candidates: lastCands.map((c) => ({
+          title: c.title, source: c.source, published: c.published,
+          alive_state: c.alive_state,
+          video_count: c.detail ? c.detail.video_count : null,
+          total_size_h: c.detail ? c.detail.total_size_h : '',
+        })),
+      }),
+    });
+    const by = {};
+    (data.items || []).forEach((it) => { by[it.index] = it; });
+    lastCands.forEach((c, i) => { c.ai = by[i] || null; });
+    aiApplied = true;
+    updateAiBtn();
+    renderResults();
+    const kept = (data.items || []).filter((it) => it.keep !== false).length;
+    showMsg(`AI 精选完成：${kept}/${lastCands.length} 个候选被推荐（相同搜索结果 1 天内不重复调用）`, true);
+  } catch (e) {
+    showMsg('AI 精选失败：' + (e.message || e), false);
+  } finally {
+    aiBtnEl.disabled = false;
+    updateAiBtn();
+  }
+}
+function aiTip(c) {
+  const a = c.ai || {};
+  const parts = [];
+  if (a.reason) parts.push(a.reason);
+  if (a.title) parts.push(`解析片名：${a.title}` +
+    (a.season != null ? ` 第${a.season}季` : '') +
+    (a.year != null ? `（${a.year}）` : ''));
+  return parts.join('\n');
+}
+
+/* ---- AI 兜底解析无标题文件名（查看内容弹窗内） ---- */
+function folderOf(p) {
+  const seg = String(p || '').replace(/\\/g, '/').split('/');
+  seg.pop();
+  return seg.length ? seg[seg.length - 1] : '';
+}
+async function aiParseFiles(btn, c) {
+  const d = c.detail;
+  const untitled = (d.files || []).filter((f) => f.warn);
+  btn.disabled = true;
+  btn.textContent = 'AI 解析中…';
+  try {
+    const data = await api('/api/candidates/ai-parse', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ names: untitled.map((f) => ({
+        name: f.name,
+        search_title: lastKw,
+        share_title: c.title || '',
+        folder: folderOf(f.path || f.name),
+      })) }),
+    });
+    const by = {};
+    (data.items || []).forEach((it) => { by[it.index] = it; });
+    untitled.forEach((f, i) => { f.ai = by[i] || null; });
+    mbodyEl.textContent = '';  // 重渲染弹窗，文件行回填 AI 徽标
+    mbodyEl.appendChild(renderDetail(c, d));
+    showMsg('AI 解析完成（结果仅供命名参考，相同文件名 1 天内不重复调用）', true);
+  } catch (e) {
+    showMsg('AI 解析失败：' + (e.message || e), false);
+    btn.disabled = false;
+    btn.textContent = 'AI 解析文件名';
+  }
+}
+
 /* ---- 渲染 ---- */
 function metaText() {
   const head = lastMeta ? `${lastMeta.title}(${lastMeta.year || ''})` : lastKeyword;
@@ -189,6 +295,10 @@ function renderResults() {
       lastCands.length ? '当前筛选条件下无结果，可切换上方"存活"筛选。' : '无候选。'));
     return;
   }
+  if (aiApplied) {  // AI 精选生效：推荐在前，重复组跟随，被剔除沉底
+    shown.sort((a, b) => aiRank(a) - aiRank(b)
+      || ((b.ai && b.ai.score) || 0) - ((a.ai && a.ai.score) || 0));
+  }
   for (const c of shown) listEl.appendChild(renderCard(c));
 }
 
@@ -199,6 +309,25 @@ function renderCard(c) {
   const badges = el('div', 'badges');
   badges.appendChild(el('span', 'bd', DISK_NAMES[c.disk] || c.disk));
   if (c.score) badges.appendChild(el('span', 'bd', `匹配 ${Math.round(c.score * 100)}%`));
+  // AI 精选徽标（推荐分/重复/剔除），tooltip 带理由与 AI 解析片名
+  if (aiApplied && c.ai) {
+    if (c.ai.keep === false) {
+      const b = el('span', 'bd ai-drop', 'AI 剔除');
+      b.title = aiTip(c) || 'AI 判定为无关或垃圾资源';
+      badges.appendChild(b);
+    } else {
+      if (c.ai.score != null) {
+        const b = el('span', 'bd ai-ok', `AI ${c.ai.score}`);
+        b.title = aiTip(c);
+        badges.appendChild(b);
+      }
+      if (c.ai.dup_of != null) {
+        const b = el('span', 'bd ai-dup', 'AI 重复');
+        b.title = `与第 ${c.ai.dup_of + 1} 个候选内容重复，优先选择组内被推荐者\n` + aiTip(c);
+        badges.appendChild(b);
+      }
+    }
+  }
   if (c.source) badges.appendChild(el('span', 'bd', c.source));
   if (c.published) badges.appendChild(el('span', 'bd', c.published.slice(0, 10)));
   if (c.passcode) badges.appendChild(el('span', 'bd code', `提取码 ${c.passcode}`));
@@ -417,6 +546,18 @@ function renderDetail(c, d) {
       w.title = f.warn;
       row.appendChild(w);
     }
+    if (f.ai) {  // AI 兜底解析结果（弹窗内点「AI 解析文件名」后回填）
+      const a = f.ai;
+      const txt = a.title
+        ? 'AI: ' + a.title
+          + (a.season != null ? ' S' + pad(a.season) : '')
+          + (a.episode != null ? 'E' + pad(a.episode) : '')
+        : 'AI: 无法识别';
+      const b = el('span', 'badge' + (a.confident ? ' tick' : ''), txt);
+      b.title = (a.confident ? 'AI 解析（有明确依据）' : 'AI 猜测（仅供参考）')
+        + '：据此可规范命名为 影片名 SxxEyy';
+      row.appendChild(b);
+    }
     const toggle = () => {
       if (pickedFids.has(f.fid)) pickedFids.delete(f.fid);
       else pickedFids.add(f.fid);
@@ -429,6 +570,16 @@ function renderDetail(c, d) {
   wrap.appendChild(list);
   wrap.appendChild(el('div', 'hint',
     '点选文件行可仅转存所选剧集（再次点击取消）。'));
+
+  /* AI 兜底解析入口：弹窗内存在无标题文件名且管理员已配置 LLM 时提供，
+     结果（影片名/季/集）以徽标回填到对应文件行（服务端缓存 1 天） */
+  if (llmEnabled && files.some((f) => f.warn)) {
+    const pbtn = el('button', 'sec', 'AI 解析文件名');
+    pbtn.type = 'button';
+    pbtn.title = '使用 AI 结合搜索词/分享标题/文件夹名推断无标题文件名的影片名与季集';
+    pbtn.onclick = () => aiParseFiles(pbtn, c);
+    wrap.appendChild(pbtn);
+  }
 
   const acts = el('div', 'actions');
   updateMainBtn();
@@ -475,6 +626,7 @@ footEl.textContent = '本工具仅聚合第三方公开的网盘分享链接，�
 /* ---- 初始化 ---- */
 buildChips();
 btnEl.onclick = dosearch;
+aiBtnEl.onclick = toggleAiReview;
 
 /* ---- 顶部导航 ---- */
 var logoutBtn = document.getElementById('btn-logout');

@@ -7,6 +7,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
 from . import config, db, settings
+from . import llm
 from .auth import hash_password, new_stream_token, require_admin
 
 router = APIRouter()
@@ -127,11 +128,14 @@ async def get_config(request: Request):
     _, err = require_admin(request)
     if err:
         return err
-    return {"config": [
-        {"key": key, "value": settings.get(key),
-         "meta": settings.SETTINGS_META.get(key, "")}
-        for key in settings.EDITABLE
-    ]}
+    items = []
+    for key in settings.EDITABLE:
+        value = settings.get(key)
+        if key == "LLM_API_KEY":  # API Key 回显打码，不回传明文
+            value = llm.masked_key(value)
+        items.append({"key": key, "value": value,
+                      "meta": settings.SETTINGS_META.get(key, "")})
+    return {"config": items}
 
 
 @router.post("/api/admin/config")
@@ -145,6 +149,9 @@ async def set_config(request: Request):
         return JSONResponse({"detail": "请求体必须是 JSON"}, status_code=400)
     if not isinstance(body, dict):
         return JSONResponse({"detail": "请求体必须是 JSON 对象"}, status_code=400)
+    # 打码占位值（管理页原样提交）视为"未修改"，避免用掩码覆盖真实 Key
+    body = {k: v for k, v in body.items()
+            if not (k == "LLM_API_KEY" and llm.is_masked(str(v)))}
     try:
         config_data = settings.set(config.DB_PATH, body)
     except ValueError as e:

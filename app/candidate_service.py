@@ -14,9 +14,10 @@ from datetime import datetime
 from difflib import SequenceMatcher
 
 from . import config, db, settings
+from .name_parser import parser as name_parser, spec_dict
 from .tmdb import VideoMeta, fetch_meta
 from .stream_service import parse_video_id
-from .matcher import JUNK_PATTERN, VIDEO_EXTS, episode_of, parse, parse_file_spec
+from .matcher import JUNK_PATTERN, VIDEO_EXTS
 from .providers.base import ProviderError
 from .providers.quark import QuarkDriveProvider
 from .providers.search import PanSouProvider, ResourceSearchProvider, SearchCandidate, SearchError
@@ -316,12 +317,14 @@ class CandidateService:
                     or JUNK_PATTERN.search(e.name):
                 other_count += 1
                 continue
-            p = parse(e.name)
+            # 季集/规格统一由 MessyNameParser 解析（覆盖 SE03.11/第X集/狂飙01
+            # 等乱七八糟命名，比旧 matcher 更准）；spec 为展示规格字典
+            info = name_parser.parse(e.name)
             files.append({
                 "name": e.name, "path": e.path, "fid": e.fid, "size": e.size,
                 "size_h": _human_size(e.size),
-                "season": p.season, "episode": p.episode or episode_of(e.name),
-                "spec": parse_file_spec(e.name),
+                "season": info.season, "episode": info.episode,
+                "spec": spec_dict(info),
             })
         files.sort(key=lambda f: ((f["season"] or 99), (f["episode"] or 999), f["name"]))
         total_size = sum(f["size"] for f in files)

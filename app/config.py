@@ -73,6 +73,12 @@ SEARCH_CACHE_TTL: float = float(os.environ.get("SEARCH_CACHE_TTL", str(86400)))
 # 搜索后对"有效"候选做内容解析（详情直显 + 无视频排除）的最大条数
 INSPECT_LIMIT: int = int(os.environ.get("INSPECT_LIMIT", "12"))
 
+# 大语言模型（可选高级功能）：OpenAI 兼容 API，管理员在 /admin 在线配置；
+# 三项全部非空才启用（AI 精选/文件名兜底解析），留空自动退回基础功能
+LLM_API_BASE: str = os.environ.get("LLM_API_BASE", "")
+LLM_API_KEY: str = os.environ.get("LLM_API_KEY", "")
+LLM_MODEL: str = os.environ.get("LLM_MODEL", "")
+
 # 转存 Worker（阶段 4）：目标目录、扫描/轮询节奏、超时与重试上限
 TRANSFER_DIR: str = os.environ.get("TRANSFER_DIR", "GODDAMNCOOL")
 TRANSFER_SCAN_INTERVAL: float = float(os.environ.get("TRANSFER_SCAN_INTERVAL", "10"))

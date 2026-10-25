@@ -24,11 +24,15 @@ EDITABLE: dict[str, type] = {
     "TRANSFER_DIR": str,            # 转存目标目录名（网盘根目录下）
     "PANSOU_BASE_URL": str,         # PanSou 聚合搜索地址
     "TMDB_API_KEY": str,            # TMDB API Key（管理员统一填写，用户不可见）
+    "LLM_API_BASE": str,            # 大语言模型 API 地址（OpenAI 兼容，留空禁用 AI 功能）
+    "LLM_API_KEY": str,             # 大语言模型 API Key（管理员统一填写，回显打码）
+    "LLM_MODEL": str,               # 大语言模型名称（如 gpt-4o-mini / qwen-plus）
 }
 
 # 允许留空的字符串配置（留空含义见 META）
 _ALLOW_EMPTY = {"TRANSFER_DIR", "PANSOU_BASE_URL", "TMDB_API_KEY",
-                "ADDON_DESCRIPTION", "ADDON_ICON"}
+                "ADDON_DESCRIPTION", "ADDON_ICON",
+                "LLM_API_BASE", "LLM_API_KEY", "LLM_MODEL"}
 
 # 管理页展示用中文说明
 SETTINGS_META: dict[str, str] = {
@@ -45,6 +49,10 @@ SETTINGS_META: dict[str, str] = {
     "TRANSFER_DIR": "默认转存目标目录名（网盘根目录下的文件夹，留空存根目录；用户可在面板自定义）",
     "PANSOU_BASE_URL": "PanSou 聚合搜索服务地址（留空禁用外部搜索）",
     "TMDB_API_KEY": "TMDB API Key（32 位十六进制，管理员统一填写，普通用户不可见）",
+    "LLM_API_BASE": "大语言模型 API 地址（OpenAI 兼容，如 https://api.openai.com/v1，"
+                    "留空禁用 AI 精选/文件名解析等高级功能）",
+    "LLM_API_KEY": "大语言模型 API Key（管理员统一填写，保存后回显打码，普通用户不可见）",
+    "LLM_MODEL": "大语言模型名称（如 gpt-4o-mini / qwen-plus / deepseek-chat）",
 }
 
 _cache: dict = {}

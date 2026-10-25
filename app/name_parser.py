@@ -483,6 +483,23 @@ def _has_words(s: str) -> bool:
     return bool(s) and any(c.isalnum() or _CJK_RE.match(c) for c in s)
 
 
+def spec_dict(info_or_name: "str | ParsedInfo") -> dict:
+    """展示用规格字典（resolution/source/codec/audio/subtitle/languages/extras）。
+
+    取代旧 matcher.parse_file_spec：由 MessyNameParser 统一解析，
+    词表更全（4K/HD2160P×265、HDR/DV/10bit、杜比全景声等），缺省维度省略。"""
+    info = info_or_name if isinstance(info_or_name, ParsedInfo) \
+        else parser.parse(info_or_name)
+    spec: dict = {}
+    for key in ("resolution", "source", "codec"):
+        if getattr(info, key):
+            spec[key] = getattr(info, key)
+    for key in ("audio", "subtitle", "languages", "extras"):
+        if getattr(info, key):
+            spec[key] = list(getattr(info, key))
+    return spec
+
+
 # 模块级单例，调用方直接 import 使用
 parser = MessyNameParser()
 
