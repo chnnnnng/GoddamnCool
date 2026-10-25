@@ -85,19 +85,9 @@ class AISearchChain(BaseSearchChain):
             paths = [f.get("path") or f.get("name") or "" for f in vf]
             compact, mapping = llm.compact_file_paths(paths)
 
-            # ---- 过滤：只给 AI 存活候选（或 season 未指定时的单季候选）----
+            # ---- 过滤：只给 AI 存活候选 ----
             alive = getattr(c, "alive_state", None) == "ok"
-            single_season = False
-            if season is None:
-                seasons_list = d.get("seasons") or []
-                # 单季：seasons 聚合列表只有 1 个条目，或 files 里 season 唯一值只有 1 个且 >= 2 集
-                if len(seasons_list) == 1:
-                    single_season = True
-                elif len(seasons_list) == 0 and len(vf) >= 3:
-                    uniq_s = {f.get("season") for f in vf if f.get("season") is not None}
-                    if len(uniq_s) == 1:
-                        single_season = True
-            if not alive and not single_season:
+            if not alive:
                 compact_per_cand.append((compact, mapping, vf))
                 continue
 
