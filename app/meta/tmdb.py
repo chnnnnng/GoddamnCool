@@ -217,8 +217,11 @@ class TMDBMetaProvider(MetaProvider):
                 if not tmdb_id:
                     return None, ""
                 imdb_id = top.get("imdb_id") or ""
-                if not imdb_id and vtype != "movie":
-                    r2 = await self._api_get(client, f"/tv/{tmdb_id}/external_ids")
+                # TMDB /search/movie 和 /search/tv 返回结果都不带 imdb_id，
+                # 需要调 /{movie|tv}/{tmdb_id}/external_ids 补拿
+                if not imdb_id:
+                    kind = "movie" if vtype == "movie" else "tv"
+                    r2 = await self._api_get(client, f"/{kind}/{tmdb_id}/external_ids")
                     r2.raise_for_status()
                     imdb_id = (r2.json().get("imdb_id") or "").strip()
 
