@@ -448,31 +448,10 @@ async def test_auth_error_fails_permanently(env, monkeypatch):
     assert t["status"] == "FAILED" and "重新绑定" in t["error"]
 
 
-# ---- 智能重命名（需求第 8/9 条） ----
+# ---- 智能重命名（需求第 8/9 条；txt 记录已按用户要求移除） ----
 
-def _install_text_io(fake, monkeypatch):
-    """把 upload_text/download_text 替换为内存实现（记录 txt 往返）。"""
-    fake.notes: dict[str, str] = {}          # fid → 文本内容
-
-    async def fake_upload(self, pdir_fid, name, text):
-        fid = f"txt-{len(fake.drive_files)}-{name}"
-        fake.notes[fid] = text
-        fake.drive_files.append({"fid": fid, "file_name": name,
-                                 "size": len(text), "dir": False,
-                                 "pdir_fid": pdir_fid, "parent_path": "/"})
-
-    async def fake_download(self, fid, **kw):
-        if fid in fake.notes:
-            return fake.notes[fid]
-        raise ProviderError("no such text")
-
-    monkeypatch.setattr(QuarkDriveProvider, "upload_text", fake_upload)
-    monkeypatch.setattr(QuarkDriveProvider, "download_text", fake_download)
-
-
-async def test_smart_rename_canonical_and_note(env, monkeypatch):
-    """无标题文件（01.mp4）转存后自动改为规范名，网盘文件真实改名，
-    目标目录写入「已有APP_NAME智能重命名.txt」（原名 → 规范名）。"""
+async def test_smart_rename_canonical(env, monkeypatch):
+    """无标题文件（01.mp4）转存后自动改为规范名，网盘文件真实改名。"""
     fake, path = env
     fake.entries["d1"] = [
         {"fid": "s1", "file_name": "01.mp4", "dir": False, "size": 800,
@@ -481,49 +460,15 @@ async def test_smart_rename_canonical_and_note(env, monkeypatch):
          "share_fid_token": "t-s2"},
     ]
     fake._by_fid = {e["fid"]: e for lst in fake.entries.values() for e in lst}
-    _install_text_io(fake, monkeypatch)
-    t = make_task(path)                       # 搜索名"余罪" → 提纯为规范标题
+    t = make_task(path)
     await run_tick(path)
     t = db.get_task(path, t["id"])
     assert t["status"] == "COMPLETED" and t["target_fid"] == "new-s1"
     result = json.loads(t["result_json"])
-    assert result["origin_name"] == "01.mp4"          # 明细保留原名
-    assert result["name"] == "余罪.S01E01.mp4"        # 规范名
+    assert result["origin_name"] == "01.mp4"
+    assert result["name"] == "余罪.S01E01.mp4"
     assert result["renamed"] == [["01.mp4", "余罪.S01E01.mp4"]]
     assert fake.drive_files[0]["file_name"] == "余罪.S01E01.mp4"  # 网盘已改名
-    note_name = f"已有{settings.get('APP_NAME')}智能重命名.txt"
-    # 上传的记录文件：名称、目标目录、内容对照
-    uploaded = fake.drive_files[-1]
-    assert uploaded["file_name"] == note_name
-    assert uploaded["pdir_fid"] == "d-GODDAMNCOOL"
-    body = list(fake.notes.values())[-1]
-    assert "01.mp4 → 余罪.S01E01.mp4" in body
-
-
-async def test_rename_note_merges_old(env, monkeypatch):
-    """再次转存时旧记录让位（.bak）→ 合并追加 → 上传新记录 → 清理备份。"""
-    fake, path = env
-    fake.entries["d1"] = [
-        {"fid": "s1", "file_name": "01.mp4", "dir": False, "size": 800,
-         "share_fid_token": "t-s1"},
-        {"fid": "s2", "file_name": "02.mp4", "dir": False, "size": 810,
-         "share_fid_token": "t-s2"},
-    ]
-    fake._by_fid = {e["fid"]: e for lst in fake.entries.values() for e in lst}
-    _install_text_io(fake, monkeypatch)
-    t1 = make_task(path)                      # E01
-    await run_tick(path)
-    assert db.get_task(path, t1["id"])["status"] == "COMPLETED"
-    t2 = make_task(path, episode=2)           # E02 再转存一次
-    await run_tick(path)
-    t2 = db.get_task(path, t2["id"])
-    assert t2["status"] == "COMPLETED"
-    note_name = f"已有{settings.get('APP_NAME')}智能重命名.txt"
-    live = [f for f in fake.drive_files if f["file_name"] == note_name]
-    assert len(live) == 1                     # 旧记录已删除，仅存新记录
-    body = fake.notes[live[0]["fid"]]
-    assert "01.mp4 → 余罪.S01E01.mp4" in body  # 旧内容被合并保留
-    assert "02.mp4 → 余罪.S01E02.mp4" in body  # 新内容追加
 
 
 async def test_dedup_matches_renamed_by_size_and_title(env):

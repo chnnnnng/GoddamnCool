@@ -880,8 +880,7 @@ def test_task_api_files_rename_fields(tmp_db, monkeypatch):
     assert f["name"] == "01.mp4" and f["final"] == "余罪.S01E01.mp4"
     assert f["renamed"] is True and f["canonical_source"] == "ai"
     assert f["season"] == 1 and f["episode"] == 1
-    assert t["renamed_count"] == 1
-    assert "智能重命名" in t["rename_note"]
+    assert t["renamed_count"] == 1  # txt 记录已移除，rename_note 为空
 
 
 def test_manifest_addon_settings_override(tmp_db, monkeypatch):

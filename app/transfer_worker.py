@@ -517,52 +517,7 @@ class TransferWorker:
         if ai_used:
             result["ai_renamed"] = True
         log.info("任务 %s 智能重命名 %d 个文件", task["id"], len(renamed))
-        await self._write_rename_note(provider, dir_fid, renamed)
-
-    @staticmethod
-    async def _write_rename_note(provider: QuarkDriveProvider, dir_fid: str,
-                                 renamed: list[list[str]]) -> None:
-        """目标目录写入「已有{APP_NAME}智能重命名.txt」（重命名前后对照）。
-
-        已有记录文件时先让位（改名 .bak）→ 下载旧内容合并 → 上传新记录 →
-        清理备份；任一步失败尽力恢复旧记录，不影响任务状态。"""
-        app_name = settings.get("APP_NAME")
-        txt_name = f"已有{app_name}智能重命名.txt"
-        backup = txt_name + ".bak"
-        body = (f"本文件由 {app_name} 自动生成，"
-                "记录转存时的智能重命名对照（原名 → 规范名）。\n"
-                + "\n".join(f"{a} → {b}" for a, b in renamed) + "\n")
-        old = None
-        try:
-            for f in await provider.list_dir_files(dir_fid, max_depth=1):
-                if f.name == txt_name:
-                    old = f
-                    break
-            if old:
-                try:
-                    await provider.rename_file(old.fid, backup)
-                    try:
-                        prev = await provider.download_text(old.fid)
-                        body = prev.rstrip("\n") + "\n" + body
-                    except ProviderError as e:
-                        log.warning("读取旧重命名记录失败: %s", e)
-                except ProviderError as e:
-                    log.warning("旧重命名记录让位失败: %s", e)
-                    old = None
-            await provider.upload_text(dir_fid, txt_name, body)
-        except ProviderError as e:
-            log.warning("写入重命名记录失败: %s", e)
-            if old:  # 上传失败，恢复旧记录
-                try:
-                    await provider.rename_file(old.fid, txt_name)
-                except ProviderError:
-                    log.warning("恢复旧重命名记录失败")
-            return
-        if old:
-            try:
-                await provider.delete_files([old.fid])
-            except ProviderError as e:
-                log.warning("清理旧重命名记录失败: %s", e)
+        # _write_rename_note 已按用户要求移除（txt 上传链路不稳定）
 
     @staticmethod
     async def _search_safe(provider: QuarkDriveProvider, kw: str) -> list[CloudFile]:

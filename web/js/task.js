@@ -63,7 +63,7 @@ function fileTable(files) {
     if (f.renamed && f.final) {  // 已智能重命名为规范名（第二行显示原名对照）
       const cn = document.createElement('span');
       cn.className = 'cname';
-      cn.textContent = '原：' + f.name + ' → ' + f.final;
+      cn.textContent = '→ ' + f.final;
       cn.title = '转存时已智能重命名为规范名（媒体库可直接识别）';
       tdName.appendChild(cn);
       tdName.appendChild(document.createTextNode(' '));

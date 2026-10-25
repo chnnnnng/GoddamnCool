@@ -660,5 +660,5 @@ async def task_api(request: Request, task_id: str):
         if result.get("renamed"):
             task["renamed_count"] = len(result["renamed"])
         if result.get("rename_map") or result.get("renamed"):
-            task["rename_note"] = f"已有{settings.get('APP_NAME')}智能重命名.txt"
+            task["rename_note"] = ""  # txt 记录已移除
     return task
