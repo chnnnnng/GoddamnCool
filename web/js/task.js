@@ -23,7 +23,7 @@ function humanSize(n) {
   while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
   return (i === 0 ? v : v.toFixed(2)) + ' ' + units[i];
 }
-// COMPLETED 任务的落盘明细表：文件名 / 大小 / 资源规格 / 命名规范警告
+// COMPLETED 任务的落盘明细表：文件名（原名 → 规范名）/ 大小 / 资源规格
 function fileTable(files) {
   const total = files.reduce((s, f) => s + (Number(f.size) || 0), 0);
   const box = document.createElement('div');
@@ -44,25 +44,45 @@ function fileTable(files) {
     const tr = document.createElement('tr');
     const tdName = document.createElement('td');
     tdName.className = 'wrap';
-    tdName.textContent = f.name;
-    if (f.exists) {  // 转存前网盘已有同名文件：绿勾提示（不拦截转存）
+    /* 【SxxEyy】badge 最前 → 原名称 → 规范名 → 智能解析/已在网盘 badge
+       （需求第 10 条，与搜索页弹窗条目同一布局；不再显示"文件名不规范"） */
+    if (f.season != null || f.episode != null) {
+      tdName.appendChild(badge(
+        (f.season != null ? 'S' + String(f.season).padStart(2, '0') : '')
+        + (f.episode != null ? 'E' + String(f.episode).padStart(2, '0') : ''),
+        'ep'));
+      tdName.appendChild(document.createTextNode(' '));
+    }
+    tdName.appendChild(document.createTextNode(f.name));
+    if (f.exists) {  // 转存前按 精确大小+粗略片名 匹配到网盘已有文件
       tdName.appendChild(document.createTextNode(' '));
       const tick = badge('✓ 已在网盘', 'tick');
-      tick.title = '转存前网盘中已有同名文件，本次转存仍会执行（重名将由网盘自动处理）';
+      tick.title = '转存前按 精确文件大小+粗略片名 匹配到网盘已有文件，本次转存仍会执行';
       tdName.appendChild(tick);
     }
-    if (f.warn) {  // 疑似不符合命名规范（与 matcher 规则一致）：黄色提示
+    if (f.renamed && f.final) {  // 已智能重命名为规范名（第二行显示原名对照）
+      const cn = document.createElement('span');
+      cn.className = 'cname';
+      cn.textContent = '原：' + f.name + ' → ' + f.final;
+      cn.title = '转存时已智能重命名为规范名（媒体库可直接识别）';
+      tdName.appendChild(cn);
       tdName.appendChild(document.createTextNode(' '));
-      const b = badge('⚠ 文件名不规范', 'warn');
-      b.title = f.warn;  // 悬停查看完整建议
+      const b = badge(f.canonical_source === 'ai' ? 'AI智能解析' : '智能解析',
+        f.canonical_source === 'ai' ? 'tick' : '');
+      b.title = f.canonical_source === 'ai'
+        ? '转存时结合 AI 解析出的规范文件名'
+        : '转存时已智能重命名为规范文件名';
       tdName.appendChild(b);
-    }
-    if (f.canonical && f.canonical !== f.name) {  // 规范文件名（第二行）
+    } else if (f.canonical && f.canonical !== f.name) {  // 规范名建议（第二行）
       const cn = document.createElement('span');
       cn.className = 'cname';
       cn.textContent = '→ ' + f.canonical;
       cn.title = '规范文件名（按此命名可被媒体库正确识别）';
       tdName.appendChild(cn);
+      tdName.appendChild(document.createTextNode(' '));
+      const b = badge('智能解析');
+      b.title = '规则解析出的规范文件名';
+      tdName.appendChild(b);
     }
     const tdSize = document.createElement('td');
     tdSize.textContent = f.size > 0 ? (f.size_h || humanSize(f.size)) : '—';
@@ -101,6 +121,11 @@ function render(t) {
       rows.push(row('转存方式', '所选文件（' + ((res.names || []).length || '?') + ' 项）'));
     else if (res.name)
       rows.push(row('转存方式', '单文件'));
+    if (res.renamed || t.renamed_count)  // 智能重命名（需求第 8 条）
+      rows.push(row('智能重命名',
+        '已将 ' + (t.renamed_count || (res.renamed || []).length)
+        + ' 个文件重命名为规范名'
+        + (t.rename_note ? '（网盘目录已生成「' + t.rename_note + '」记录）' : '')));
     if (t.target_fid) rows.push(row('网盘 fid', t.target_fid));
   }
   if (t.error) rows.push(row('状态信息', t.error));

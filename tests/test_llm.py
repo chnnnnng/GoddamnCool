@@ -247,3 +247,70 @@ def test_extract_json_variants():
     assert llm._extract_json('{"items": [1]}') == obj
     with pytest.raises(llm.LLMError):
         llm._extract_json("完全不是 JSON")
+
+
+# ---------- 思考链关闭 + 精选合并解析（需求第 1/3 条） ----------
+
+def test_chat_payload_qwen_disables_thinking():
+    """Qwen 思考型模型关闭思考链（DashScope 兼容模式参数 enable_thinking）；
+    其他 provider 不附加该参数（不认此参数会 400）。"""
+    p = llm._chat_payload("qwen3.7-flash", [{"role": "user", "content": "x"}], 0.2)
+    assert p["enable_thinking"] is False
+    assert "enable_thinking" not in llm._chat_payload(
+        "gpt-4o", [{"role": "user", "content": "x"}], 0.2)
+
+
+def test_validate_review_files_bounds():
+    """逐文件解析输出校验：文件下标越界丢弃，字段规整。"""
+    data = {"items": [{"index": 0, "keep": True, "files": [
+        {"i": 0, "season": 1, "episode": 2, "canonical": "A.S01E02.mp4"},
+        {"i": 9, "canonical": "B.mp4"},   # 越界 → 丢弃
+        {"i": "x", "canonical": "C.mp4"},  # 非法 → 丢弃
+    ]}]}
+    out = llm._validate_review(data, 1, [1])
+    assert len(out[0]["files"]) == 1
+    assert out[0]["files"][0] == {"i": 0, "season": 1, "episode": 2,
+                                  "canonical": "A.S01E02.mp4"}
+
+
+@pytest.mark.usefixtures("tmp_db", "llm_on")
+def test_llm_status_endpoint():
+    """llm-status：前端据此把【搜索】按钮替换为【AI 精选】。"""
+    assert client.get("/api/llm-status").status_code == 401
+    r = client.get("/api/llm-status", headers=AUTH)
+    assert r.status_code == 200 and r.json()["enabled"] is True
+
+
+@pytest.mark.usefixtures("llm_on")
+def test_ai_review_with_files_parse(monkeypatch):
+    """精选+解析合并调用：输入带分享内文件路径，输出逐文件规范名/季集，
+    服务端合并原名+规范名的规格后返回（前端直接渲染徽标）。"""
+    calls = patch_chat(monkeypatch, reply=(
+        '{"items":[{"index":0,"keep":true,"score":90,"dup_of":null,'
+        '"reason":"匹配","title":"狂飙","year":2023,"season":3,'
+        '"files":[{"i":0,"season":3,"episode":6,'
+        '"canonical":"Kuang.Biao.S03E06.2023.2160p.WEB-DL.H.265.AAC.mp4"}]}]}'))
+    r = client.post("/api/candidates/ai-review", headers=AUTH, json={
+        "keyword": "狂飙", "title": "狂飙", "season": 3,
+        "candidates": [{"title": "狂飙 第三季", "source": "p1",
+                        "alive_state": "ok",
+                        "files": [{"path": "第三季/06.mp4"},
+                                  {"path": "海报.jpg"}]}]})
+    assert r.status_code == 200
+    it = r.json()["items"][0]
+    assert it["files"][0]["canonical"] == \
+        "Kuang.Biao.S03E06.2023.2160p.WEB-DL.H.265.AAC.mp4"
+    assert it["files"][0]["source"] == "ai"
+    assert it["files"][0]["season"] == 3 and it["files"][0]["episode"] == 6
+    # 规格从规范名解析（分辨率/来源/编码），与原名合并
+    spec = it["files"][0]["spec"]
+    assert spec["resolution"] == "2160p" and spec["source"] == "WEB-DL" \
+        and spec["codec"] == "H.265"
+    assert calls["n"] == 1
+    # 文件路径进入模型输入（缓存键随内容变化）
+    client.post("/api/candidates/ai-review", headers=AUTH, json={
+        "keyword": "狂飙", "title": "狂飙", "season": 3,
+        "candidates": [{"title": "狂飙 第三季", "source": "p1",
+                        "alive_state": "ok",
+                        "files": [{"path": "第三季/07.mp4"}]}]})
+    assert calls["n"] == 2

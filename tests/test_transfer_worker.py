@@ -16,7 +16,10 @@ import pytest  # noqa: E402
 from cryptography.fernet import Fernet  # noqa: E402
 from httpx import AsyncClient, MockTransport, Response  # noqa: E402
 
-from app import config, db  # noqa: E402
+from app import config, db, settings  # noqa: E402
+from app.matcher import rough_title_match  # noqa: E402
+from app.providers.base import ProviderError  # noqa: E402
+from app.providers.quark import QuarkDriveProvider  # noqa: E402
 from app.tmdb import VideoMeta  # noqa: E402
 import app.transfer_worker as tw  # noqa: E402
 from app.transfer_worker import TransferWorker  # noqa: E402
@@ -57,12 +60,13 @@ class FakeQuark:
 
     # ---- 辅助 ----
 
-    def land(self, fid: str) -> str:
+    def land(self, fid: str, pdir_fid: str = "0") -> str:
         """模拟转存落盘：分享条目进网盘，返回新 fid。"""
         e = self._by_fid[fid]
         new_fid = f"new-{fid}"
         self.drive_files.append({"fid": new_fid, "file_name": e["file_name"],
                                  "size": e["size"], "dir": False,
+                                 "pdir_fid": pdir_fid,
                                  "parent_path": "/GODDAMNCOOL"})
         return new_fid
 
@@ -81,7 +85,8 @@ class FakeQuark:
             body = json.loads(request.content)
             self.save_calls.append(body)
             tid = f"qt-{len(self.save_calls)}"
-            tops = [self.land(f) for f in body["fid_list"]]
+            pdir = body.get("to_pdir_fid") or "0"
+            tops = [self.land(f, pdir) for f in body["fid_list"]]
             self.task_status[tid] = [1, 2]
             self.task_top[tid] = tops
             return j(data={"task_id": tid, "task_sync": True,
@@ -99,10 +104,34 @@ class FakeQuark:
             return j(data=data)
         if path.endswith("/file/search"):
             q = request.url.params["query"]
-            return j(data={"list": [f for f in self.drive_files if q in f["file_name"]]})
+            # 模拟夸克搜索的模糊性：除子串外还按片名粗略匹配
+            # （智能重命名后的规范名 Yu.Zui... 也能被中文名 余罪 搜到）
+            return j(data={"list": [f for f in self.drive_files
+                                    if q in f["file_name"]
+                                    or rough_title_match(q, f["file_name"])]})
         if path.endswith("/file/sort"):
-            return j(data={"list": [{"fid": f"d-{n}", "file_name": n, "dir": True}
-                                    for n in self.drive_dirs]})
+            pdir = request.url.params.get("pdir_fid") or "0"
+            items: list[dict] = []
+            if pdir == "0":  # 根目录：转存目录 + 根下散落文件
+                items = [{"fid": f"d-{n}", "file_name": n, "dir": True, "size": 0}
+                         for n in self.drive_dirs]
+            items += [{"fid": f["fid"], "file_name": f["file_name"],
+                       "dir": bool(f.get("dir")), "size": f["size"]}
+                      for f in self.drive_files
+                      if f.get("pdir_fid", "0") == pdir]
+            return j(data={"list": items})
+        if path.endswith("/file/rename"):
+            body = json.loads(request.content)
+            for f in self.drive_files:
+                if f["fid"] == body["fid"]:
+                    f["file_name"] = body["file_name"]
+                    return j()
+            return j(1, "file not found")
+        if path.endswith("/file/delete"):
+            fids = set(json.loads(request.content).get("filelist") or [])
+            self.drive_files = [f for f in self.drive_files
+                                if f["fid"] not in fids]
+            return j()
         if path.endswith("/file") and request.method == "POST":
             name = json.loads(request.content)["file_name"]
             if name in self.drive_dirs:
@@ -184,7 +213,7 @@ async def test_dedup_still_saves_and_marks(env):
     fake, path = env
     fake.drive_files.append({"fid": "own-1", "dir": False, "size": 800,
                              "file_name": "余罪.S01E01.2016.1080p.WEB-DL.mp4",
-                             "parent_path": "/"})
+                             "pdir_fid": "0", "parent_path": "/"})
     t = make_task(path)
     await run_tick(path)
     t = db.get_task(path, t["id"])
@@ -322,7 +351,7 @@ async def test_picks_mode_existed_marks(env):
     fake._by_fid = {"s1": fake.entries["0"][0]}
     fake.drive_files.append({"fid": "own-1", "dir": False, "size": 800,
                              "file_name": "余罪.S01E01.2016.1080p.WEB-DL.mp4",
-                             "parent_path": "/"})
+                             "pdir_fid": "0", "parent_path": "/"})
     t, _ = db.create_task(path, vtype="series", imdb_id="tt5925192", season=None,
                           episode=None, title="余罪", candidate_title="余罪",
                           share_url=SHARE_URL, mode="picks", picks=["s1"],
@@ -417,6 +446,100 @@ async def test_auth_error_fails_permanently(env, monkeypatch):
     await run_tick(path)
     t = db.get_task(path, t["id"])
     assert t["status"] == "FAILED" and "重新绑定" in t["error"]
+
+
+# ---- 智能重命名（需求第 8/9 条） ----
+
+def _install_text_io(fake, monkeypatch):
+    """把 upload_text/download_text 替换为内存实现（记录 txt 往返）。"""
+    fake.notes: dict[str, str] = {}          # fid → 文本内容
+
+    async def fake_upload(self, pdir_fid, name, text):
+        fid = f"txt-{len(fake.drive_files)}-{name}"
+        fake.notes[fid] = text
+        fake.drive_files.append({"fid": fid, "file_name": name,
+                                 "size": len(text), "dir": False,
+                                 "pdir_fid": pdir_fid, "parent_path": "/"})
+
+    async def fake_download(self, fid, **kw):
+        if fid in fake.notes:
+            return fake.notes[fid]
+        raise ProviderError("no such text")
+
+    monkeypatch.setattr(QuarkDriveProvider, "upload_text", fake_upload)
+    monkeypatch.setattr(QuarkDriveProvider, "download_text", fake_download)
+
+
+async def test_smart_rename_canonical_and_note(env, monkeypatch):
+    """无标题文件（01.mp4）转存后自动改为规范名，网盘文件真实改名，
+    目标目录写入「已有APP_NAME智能重命名.txt」（原名 → 规范名）。"""
+    fake, path = env
+    fake.entries["d1"] = [
+        {"fid": "s1", "file_name": "01.mp4", "dir": False, "size": 800,
+         "share_fid_token": "t-s1"},
+        {"fid": "s2", "file_name": "02.mp4", "dir": False, "size": 810,
+         "share_fid_token": "t-s2"},
+    ]
+    fake._by_fid = {e["fid"]: e for lst in fake.entries.values() for e in lst}
+    _install_text_io(fake, monkeypatch)
+    t = make_task(path)                       # 搜索名"余罪" → 提纯为规范标题
+    await run_tick(path)
+    t = db.get_task(path, t["id"])
+    assert t["status"] == "COMPLETED" and t["target_fid"] == "new-s1"
+    result = json.loads(t["result_json"])
+    assert result["origin_name"] == "01.mp4"          # 明细保留原名
+    assert result["name"] == "余罪.S01E01.mp4"        # 规范名
+    assert result["renamed"] == [["01.mp4", "余罪.S01E01.mp4"]]
+    assert fake.drive_files[0]["file_name"] == "余罪.S01E01.mp4"  # 网盘已改名
+    note_name = f"已有{settings.get('APP_NAME')}智能重命名.txt"
+    # 上传的记录文件：名称、目标目录、内容对照
+    uploaded = fake.drive_files[-1]
+    assert uploaded["file_name"] == note_name
+    assert uploaded["pdir_fid"] == "d-GODDAMNCOOL"
+    body = list(fake.notes.values())[-1]
+    assert "01.mp4 → 余罪.S01E01.mp4" in body
+
+
+async def test_rename_note_merges_old(env, monkeypatch):
+    """再次转存时旧记录让位（.bak）→ 合并追加 → 上传新记录 → 清理备份。"""
+    fake, path = env
+    fake.entries["d1"] = [
+        {"fid": "s1", "file_name": "01.mp4", "dir": False, "size": 800,
+         "share_fid_token": "t-s1"},
+        {"fid": "s2", "file_name": "02.mp4", "dir": False, "size": 810,
+         "share_fid_token": "t-s2"},
+    ]
+    fake._by_fid = {e["fid"]: e for lst in fake.entries.values() for e in lst}
+    _install_text_io(fake, monkeypatch)
+    t1 = make_task(path)                      # E01
+    await run_tick(path)
+    assert db.get_task(path, t1["id"])["status"] == "COMPLETED"
+    t2 = make_task(path, episode=2)           # E02 再转存一次
+    await run_tick(path)
+    t2 = db.get_task(path, t2["id"])
+    assert t2["status"] == "COMPLETED"
+    note_name = f"已有{settings.get('APP_NAME')}智能重命名.txt"
+    live = [f for f in fake.drive_files if f["file_name"] == note_name]
+    assert len(live) == 1                     # 旧记录已删除，仅存新记录
+    body = fake.notes[live[0]["fid"]]
+    assert "01.mp4 → 余罪.S01E01.mp4" in body  # 旧内容被合并保留
+    assert "02.mp4 → 余罪.S01E02.mp4" in body  # 新内容追加
+
+
+async def test_dedup_matches_renamed_by_size_and_title(env):
+    """网盘已有智能重命名后的规范名文件：按 精确大小 + 粗略片名 判定已在网盘。"""
+    fake, path = env
+    # 网盘里已是改名后形态（中文名 → 拼音规范名），大小与分享内文件一致
+    fake.drive_files.append({"fid": "own-1", "dir": False, "size": 800,
+                             "file_name": "Yu.Zui.S01E01.2016.2160p.HDR.mp4",
+                             "pdir_fid": "0", "parent_path": "/"})
+    t = make_task(path)
+    await run_tick(path)
+    t = db.get_task(path, t["id"])
+    assert t["status"] == "COMPLETED"
+    result = json.loads(t["result_json"])
+    assert result.get("existed") == ["余罪.S01E01.2016.1080p.WEB-DL.mp4"]
+    assert len(fake.save_calls) == 1          # 照常转存，仅标记
 
 
 # ---- db 层 ----

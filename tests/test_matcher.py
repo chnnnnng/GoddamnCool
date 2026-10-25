@@ -177,3 +177,40 @@ def test_parse_file_spec_subtitle_variants():
     assert spec["resolution"] == "4K"
     assert spec["subtitle"] == ["简繁"]
     assert spec["languages"] == ["国粤双语"]
+
+
+# ---------- 粗略影片名匹配（需求第 9/11 条：转存改名后"已在网盘"判断） ----------
+
+def test_rough_title_match_same_content():
+    """同名或别名（原名 vs 规范名）+ 季集一致 → 匹配。"""
+    from app.matcher import rough_title_match
+    assert rough_title_match("余罪.S01E01.2016.1080p.WEB-DL.mp4",
+                             "余罪.S01E01.2016.1080p.WEB-DL.H264.mp4")
+    assert rough_title_match("余罪.S01E01.1080p.mp4",
+                             "余罪.S01E01.2016.2160p.HDR.mp4")
+
+
+def test_rough_title_match_cross_language():
+    """跨语言：中文名 ↔ 规范拼音名（智能重命名后形态）。"""
+    from app.matcher import rough_title_match
+    assert rough_title_match("余罪.S01E01.2016.1080p.mp4",
+                             "Yu.Zui.S01E01.2016.1080p.WEB-DL.mp4")
+
+
+def test_rough_title_match_conflicts():
+    """季集冲突或无片名 → 不匹配。"""
+    from app.matcher import rough_title_match
+    assert not rough_title_match("余罪.S01E01.mp4", "余罪.S01E02.mp4")
+    assert not rough_title_match("余罪.S01E01.mp4", "余罪.S02E01.mp4")
+    assert not rough_title_match("06.mkv", "06.mp4")      # 双方均无片名
+    assert not rough_title_match("余罪.S01E01.mp4", "狂飙.S01E01.mp4")
+
+
+def test_match_canonical_renamed_file():
+    """网盘中已是智能重命名后的规范名（拼音/英文）也能命中 TMDB 中文名。"""
+    meta = VideoMeta({"imdb_id": "tt5925192", "name": "余罪", "type": "series",
+                      "releaseInfo": "2016",
+                      "videos": [{"season": 1, "episode": 12, "name": "一切归零"}]})
+    res = M.match([cf("Yu.Zui.S01E12.2016.1080p.WEB-DL.H264.mp4", "f12")],
+                  meta, season=1, episode=12)
+    assert res and res[0].file.fid == "f12"

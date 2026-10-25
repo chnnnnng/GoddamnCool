@@ -76,6 +76,19 @@ class CloudDriveProvider:
         """在网盘根目录定位同名文件夹，不存在则创建，返回 fid。"""
         raise NotImplementedError
 
+    async def list_dir_files(self, pdir_fid: str = "0", *, max_depth: int = 2,
+                             limit: int = 2000) -> list[CloudFile]:
+        """递归列出某目录下的文件（含 fid/名称/大小）。"""
+        raise NotImplementedError
+
+    async def rename_file(self, fid: str, new_name: str) -> None:
+        """重命名网盘文件（转存智能重命名用）。"""
+        raise NotImplementedError
+
+    async def upload_text(self, pdir_fid: str, name: str, text: str) -> None:
+        """上传小文本文件（写入智能重命名记录用）。"""
+        raise NotImplementedError
+
     async def close(self) -> None:
         """释放底层连接。"""
         raise NotImplementedError

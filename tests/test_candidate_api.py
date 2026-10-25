@@ -550,8 +550,8 @@ def test_inspect_provider_error(tmp_db, monkeypatch):
     assert r.status_code == 400 and "分享解析失败" in r.json()["detail"]
 
 
-def test_inspect_files_warn_flag(tmp_db, monkeypatch):
-    """inspect 响应 files 每项带 warn 标志（无标题文件名）。"""
+def test_inspect_files_canonical_flag(tmp_db, monkeypatch):
+    """inspect 响应 files 每项带规范文件名（无标题文件名结合搜索名兜底）。"""
     monkeypatch.setattr(cr.db, "load_user_cookie", lambda p, uid: "c=1")
     patch_inspect(monkeypatch, result={
         "video_count": 4, "other_count": 0, "total_size": 2000,
@@ -569,10 +569,6 @@ def test_inspect_files_warn_flag(tmp_db, monkeypatch):
     files = client.post("/api/candidates/inspect", headers=AUTH,
                         json={"share_url": GOOD_URL, "kw": "三体",
                               "title": "三体 全集"}).json()["files"]
-    assert "标题" in files[0]["warn"]
-    assert files[1]["warn"] == ""
-    assert "标题" in files[2]["warn"]
-    assert files[3]["warn"] == ""
     # 规范文件名：自带标题的忽略上下文；无标题名用搜索名/分享名兜底
     assert files[0]["canonical"] == "三体.S03E11.mp4"
     assert files[1]["canonical"] == "Movie.2016.1080p.BluRay.H.264.mkv"
@@ -850,7 +846,7 @@ def test_manifest_name_is_app_name(tmp_db, monkeypatch):
 # ---------- 运行时配置与任务文件明细（阶段 9） ----------
 
 def test_task_api_files_detail(tmp_db, monkeypatch):
-    """COMPLETED 任务返回落盘文件明细（名称/大小/规格/命名规范提示）。"""
+    """COMPLETED 任务返回落盘文件明细（名称/大小/规格/规范名/季集）。"""
     patch_fetch_meta(monkeypatch)
     task_id = _confirm().json()["task_id"]
     result = {"mode": "episode",
@@ -858,51 +854,34 @@ def test_task_api_files_detail(tmp_db, monkeypatch):
               "size": 1536000, "fid": "fid123", "located": "save_as"}
     db.set_task_fields(tmp_db, task_id, result_json=json.dumps(result))
     db.update_task_status(tmp_db, task_id, "COMPLETED")
-    files = client.get(f"/api/task/{task_id}", headers=AUTH).json()["files"]
+    data = client.get(f"/api/task/{task_id}", headers=AUTH).json()
+    files = data["files"]
     assert len(files) == 1
     f = files[0]
     assert f["size_h"] == "1.5 MB"
     assert any("1080" in s for s in f["spec"])
-    assert f["name_ok"] is True and f["warn"] == ""
+    assert f["season"] == 1 and f["episode"] == 12
+    assert f["renamed"] is False and f["final"] == f["name"]
 
 
-def test_task_api_files_name_warn(tmp_db, monkeypatch):
-    """文件名缺集数标注（matcher 无法按季集定位）时返回 warning。"""
+def test_task_api_files_rename_fields(tmp_db, monkeypatch):
+    """智能重命名任务明细：final 为规范名、renamed 标记与来源、原名保留。"""
     patch_fetch_meta(monkeypatch)
     task_id = _confirm().json()["task_id"]
-    result = {"mode": "picks", "names": ["随便一个没有集数的名字.mp4"]}
-    db.set_task_fields(tmp_db, task_id,
-                       result_json=json.dumps(result, ensure_ascii=False))
+    result = {"mode": "picks", "names": ["01.mp4"],
+              "files": [{"name": "01.mp4", "size": 800}],
+              "renamed": [["01.mp4", "余罪.S01E01.mp4"]],
+              "ai_renamed": True,
+              "rename_map": {"01.mp4": "余罪.S01E01.mp4"}}
+    db.set_task_fields(tmp_db, task_id, result_json=json.dumps(result))
     db.update_task_status(tmp_db, task_id, "COMPLETED")
-    files = client.get(f"/api/task/{task_id}", headers=AUTH).json()["files"]
-    assert files[0]["name_ok"] is False and "集数" in files[0]["warn"]
-
-
-def test_task_api_files_warn_rules(tmp_db, monkeypatch):
-    """警告规则：纯集数名→无标题提示；非视频文件不检查；episode 任务中的
-    电影文件→缺集数提示；whole 任务（无季集目标）标准命名不提示。"""
-    patch_fetch_meta(monkeypatch)
-    task_id = _confirm().json()["task_id"]
-    db.set_task_fields(tmp_db, task_id, result_json=json.dumps(
-        {"mode": "bulk", "names": ["SE03.11.mp4", "tvshow.nfo"]}))
-    db.update_task_status(tmp_db, task_id, "COMPLETED")
-    files = {f["name"]: f for f in
-             client.get(f"/api/task/{task_id}", headers=AUTH).json()["files"]}
-    assert "标题" in files["SE03.11.mp4"]["warn"]
-    assert files["tvshow.nfo"]["warn"] == ""
-    # episode 任务（目标 S01E12）里落了电影文件：无集数标注应提示
-    movie = "X.Men.Apocalypse.2016.1080p.BluRay.x264.DTS-WiKi.MKV"
-    db.set_task_fields(tmp_db, task_id,
-                       result_json=json.dumps({"mode": "bulk", "names": [movie]}))
-    assert "集数" in client.get(f"/api/task/{task_id}",
-                               headers=AUTH).json()["files"][0]["warn"]
-    # whole 任务（无季集目标）：标准命名的电影文件不提示
-    tid2 = _confirm(mode="whole").json()["task_id"]
-    db.set_task_fields(tmp_db, tid2,
-                       result_json=json.dumps({"mode": "bulk", "names": [movie]}))
-    db.update_task_status(tmp_db, tid2, "COMPLETED")
-    f2 = client.get(f"/api/task/{tid2}", headers=AUTH).json()["files"][0]
-    assert f2["warn"] == ""
+    t = client.get(f"/api/task/{task_id}", headers=AUTH).json()
+    f = t["files"][0]
+    assert f["name"] == "01.mp4" and f["final"] == "余罪.S01E01.mp4"
+    assert f["renamed"] is True and f["canonical_source"] == "ai"
+    assert f["season"] == 1 and f["episode"] == 1
+    assert t["renamed_count"] == 1
+    assert "智能重命名" in t["rename_note"]
 
 
 def test_manifest_addon_settings_override(tmp_db, monkeypatch):

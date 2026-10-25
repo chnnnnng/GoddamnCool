@@ -6,7 +6,11 @@
 鉴权：请求头 Cookie（网页版凭证），响应 Set-Cookie 中的 __puus 必须回写。
 """
 import asyncio
+import base64
+import hashlib
+import json
 import logging
+import time
 
 import httpx
 
@@ -254,6 +258,171 @@ class QuarkDriveProvider(CloudDriveProvider):
 
         await walk("0", 0)
         return names
+
+    async def list_dir_files(self, pdir_fid: str = "0", *, max_depth: int = 2,
+                             limit: int = 2000) -> list[CloudFile]:
+        """递归列出某目录下的文件（含大小与 fid），供转存后智能重命名定位。"""
+        out: list[CloudFile] = []
+        size = 50
+
+        async def walk(fid: str, depth: int) -> None:
+            page = 1
+            while page <= 50 and len(out) < limit:
+                data = await self._request("GET", "/file/sort", params={
+                    "pdir_fid": fid, "_page": str(page),
+                    "_size": str(size), "_fetch_total": "1"})
+                lst = data.get("list") or []
+                for e in lst:
+                    if len(out) >= limit:
+                        return
+                    if e.get("dir"):
+                        if depth < max_depth:
+                            await walk(e.get("fid", ""), depth + 1)
+                    elif e.get("file_name"):
+                        out.append(CloudFile(
+                            fid=str(e.get("fid") or ""),
+                            name=e["file_name"],
+                            size=int(e.get("size") or 0),
+                            is_dir=False,
+                            parent_path=""))
+                total = data.get("_total") or data.get("total")
+                if total is not None:
+                    if page * size >= int(total):
+                        return
+                elif len(lst) < size:
+                    return
+                page += 1
+
+        await walk(pdir_fid or "0", 0)
+        return out
+
+    async def list_all_files(self, max_depth: int = 3) -> list[CloudFile]:
+        """递归列出网盘全部文件（含大小），供"精确大小+粗略片名"已有匹配。"""
+        return await self.list_dir_files("0", max_depth=max_depth, limit=5000)
+
+    async def rename_file(self, fid: str, new_name: str) -> None:
+        """重命名网盘文件（转存后智能重命名用，接口同开源实现 quark-auto-save）。"""
+        await self._request("POST", "/file/rename",
+                            json={"fid": fid, "file_name": new_name})
+
+    async def delete_files(self, fids: list[str]) -> None:
+        """删除网盘文件（回收站，可用于清理旧的记录文件）。"""
+        if not fids:
+            return
+        await self._request("POST", "/file/delete", json={
+            "action_type": 2, "filelist": fids, "exclude_fids": []})
+
+    async def download_text(self, fid: str, *, max_bytes: int = 1 << 20) -> str:
+        """下载小文本文件内容（读取已有重命名记录用）。失败抛 ProviderError。"""
+        data = await self._request("POST", "/file/download", json={"fids": [fid]})
+        entries = data if isinstance(data, list) else (data.get("data") or [])
+        url = (entries[0] or {}).get("download_url") if entries else ""
+        if not url:
+            raise ProviderError("未取得下载直链")
+        # 下载直链会 302 跳转，client 配置了 follow_redirects=False，手动跟随
+        try:
+            async with self._lock:
+                resp = await self._client.get(url)
+                for _ in range(5):
+                    if resp.status_code not in (301, 302, 303, 307, 308):
+                        break
+                    loc = resp.headers.get("location") or ""
+                    if not loc:
+                        break
+                    resp = await self._client.get(loc)
+                resp.raise_for_status()
+                return resp.content[:max_bytes].decode("utf-8", "replace")
+        except httpx.HTTPError as e:
+            raise ProviderError(f"下载文本文件失败: {e}") from e
+
+    async def upload_text(self, pdir_fid: str, name: str, text: str) -> None:
+        """上传小文本文件（单分片 ≤4MB，用于写入智能重命名记录）。
+
+        流程对齐开源实现（alist quark 驱动）：/file/upload/pre →
+        /file/upload/auth → OSS PUT 单分片 → /file/upload/auth(提交) →
+        OSS POST complete → /file/upload/finish。任一步失败抛 ProviderError。"""
+        content = text.encode("utf-8")
+        if len(content) > 4 << 20:
+            raise ProviderError("文本文件过大（>4MB）")
+        now_ms = int(time.time() * 1000)
+        pre = await self._request("POST", "/file/upload/pre", json={
+            "ccp_hash_update": True, "dir_name": "", "file_name": name,
+            "format_type": "text/plain", "l_created_at": now_ms,
+            "l_updated_at": now_ms, "pdir_fid": pdir_fid or "0",
+            "size": len(content)})
+        if pre.get("finish"):  # 秒传命中（同一内容此前上传过）
+            return
+        bucket, obj_key = str(pre.get("bucket") or ""), str(pre.get("obj_key") or "")
+        upload_id, task_id = str(pre.get("upload_id") or ""), str(pre.get("task_id") or "")
+        host = str(pre.get("upload_url") or "").removeprefix("https://")
+        auth_info = pre.get("auth_info")
+        if not (bucket and obj_key and upload_id and host):
+            raise ProviderError("上传 pre 响应缺少必要字段")
+        mime, ua = "text/plain", \
+            "aliyun-sdk-js/6.6.1 Chrome 98.0.4758.80 on Windows 10 64-bit"
+
+        def httpdate() -> str:
+            return time.strftime("%a, %d %b %Y %H:%M:%S GMT", time.gmtime())
+
+        url = f"https://{bucket}.{host}/{obj_key}"
+        # 分片 PUT 授权
+        d = httpdate()
+        auth = await self._request("POST", "/file/upload/auth", json={
+            "auth_info": auth_info,
+            "auth_meta": (f"PUT\n{mime}\n{d}\nx-oss-date:{d}\n"
+                          f"x-oss-user-agent:{ua}\n"
+                          f"/{bucket}/{obj_key}?partNumber=1&uploadId={upload_id}"),
+            "task_id": task_id})
+        auth_key = str(auth.get("auth_key") or "")
+        if not auth_key:
+            raise ProviderError("上传 auth 响应缺少 auth_key")
+        try:
+            async with httpx.AsyncClient(timeout=60) as client:
+                r = await client.put(
+                    url, params={"partNumber": "1", "uploadId": upload_id},
+                    content=content,
+                    headers={"Authorization": auth_key, "Content-Type": mime,
+                             "Referer": REFERER, "x-oss-date": d,
+                             "x-oss-user-agent": ua})
+                if r.status_code != 200:
+                    raise ProviderError(f"分片上传失败 (HTTP {r.status_code})")
+                etag = (r.headers.get("etag") or "").strip('"')
+                # 提交分片（complete multipart upload）
+                xml = ('<?xml version="1.0" encoding="UTF-8"?>\n'
+                       "<CompleteMultipartUpload>\n"
+                       f"<Part><PartNumber>1</PartNumber><ETag>{etag}</ETag></Part>\n"
+                       "</CompleteMultipartUpload>")
+                md5_b64 = base64.b64encode(
+                    hashlib.md5(xml.encode()).digest()).decode()
+                callback_b64 = ""
+                if pre.get("callback"):
+                    callback_b64 = base64.b64encode(
+                        json.dumps(pre["callback"]).encode("utf-8")).decode()
+                d2 = httpdate()
+                auth2 = await self._request("POST", "/file/upload/auth", json={
+                    "auth_info": auth_info,
+                    "auth_meta": (
+                        f"POST\n{md5_b64}\napplication/xml\n{d2}\n"
+                        + (f"x-oss-callback:{callback_b64}\n" if callback_b64 else "")
+                        + f"x-oss-date:{d2}\nx-oss-user-agent:{ua}\n"
+                        f"/{bucket}/{obj_key}?uploadId={upload_id}"),
+                    "task_id": task_id})
+                auth_key2 = str(auth2.get("auth_key") or "")
+                if not auth_key2:
+                    raise ProviderError("提交上传 auth 响应缺少 auth_key")
+                headers2 = {"Authorization": auth_key2, "Content-MD5": md5_b64,
+                            "Content-Type": "application/xml", "Referer": REFERER,
+                            "x-oss-date": d2, "x-oss-user-agent": ua}
+                if callback_b64:
+                    headers2["x-oss-callback"] = callback_b64
+                r2 = await client.post(url, params={"uploadId": upload_id},
+                                       content=xml.encode(), headers=headers2)
+                if r2.status_code != 200:
+                    raise ProviderError(f"提交分片失败 (HTTP {r2.status_code})")
+        except httpx.HTTPError as e:
+            raise ProviderError(f"OSS 上传失败: {e}") from e
+        await self._request("POST", "/file/upload/finish",
+                            json={"obj_key": obj_key, "task_id": task_id})
 
     async def save_share_files(self, pwd_id: str, stoken: str, items: list[ShareFile],
                                to_pdir_fid: str = "0") -> dict:

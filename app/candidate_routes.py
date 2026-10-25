@@ -20,7 +20,6 @@
 """
 import json
 import os
-import re
 import time
 
 from fastapi import APIRouter, Request
@@ -29,8 +28,8 @@ from fastapi.responses import JSONResponse
 from . import config, db, settings
 from . import llm
 from .auth import require_user
-from .matcher import VIDEO_EXTS, parse
-from .name_parser import canonical_with_context
+from .matcher import _title_keys_similarity
+from .name_parser import canonical_with_context, spec_dict
 from .name_parser import parser as name_parser
 from .tmdb import fetch_meta
 from .providers.search import SHARE_URL_RE
@@ -75,16 +74,66 @@ def _unlimited(user: dict) -> bool:
     return user["role"] == "admin" or user["tier"] == "pro"
 
 
-# 网盘文件名集合缓存 {user_id: (拉取时间, 文件名集合)}；TTL 60s——
+# 网盘已有文件索引缓存 {user_id: (拉取时间, _ExistingIndex)}；TTL 60s——
 # 转存/改名后最多延迟 1 分钟反映到"网盘中已有 N 项"，避免每次搜索都全盘递归
 _DRIVE_EXISTING_TTL = 60.0
-_drive_existing_cache: dict[str, tuple[float, set[str]]] = {}
+_drive_existing_cache: dict[str, tuple[float, "_ExistingIndex"]] = {}
 
 
-async def _drive_existing_names(cookie: str, user_id: str) -> set[str]:
-    """拉取用户网盘全部文件名集合（list_all_file_names 递归列取），失败返回空集合。"""
+class _ExistingIndex:
+    """用户网盘已有文件索引（需求第 9 条）。
+
+    转存会智能重命名为规范名，"已在网盘"不能再用同名判断：
+    1. 同名快速集合（未改名/手动整理场景）；
+    2. 精确文件大小匹配 + 粗略影片名匹配（规范名场景，大小→文件倒排）。
+    网盘文件名解析按需惰性缓存，避免整盘预解析。"""
+
+    def __init__(self, files: list):
+        self.names = {f.name for f in files}
+        self.by_size: dict[int, list] = {}
+        for f in files:
+            if f.size:
+                self.by_size.setdefault(int(f.size), []).append(f)
+        self._memo: dict[str, object] = {}
+
+    def _parse(self, name: str):
+        if name not in self._memo:
+            self._memo[name] = name_parser.parse(name)
+        return self._memo[name]
+
+    def match(self, name: str, size: int | None = 0) -> bool:
+        """分享文件是否已在网盘：同名，或（大小精确相等 + 粗略片名匹配）。"""
+        base = os.path.basename(name or "")
+        if base and base in self.names:
+            return True
+        if not size or not base:
+            return False
+        p = self._parse(base)
+        ta = p.title or p.title_en
+        if not ta:
+            return False  # 纯季集/编号名无从粗略匹配
+        for f in self.by_size.get(int(size), []):
+            q = self._parse(f.name)
+            tb = q.title or q.title_en
+            if not tb or _title_keys_similarity(ta, tb) < 0.75:
+                continue
+            if p.episode is not None and q.episode is not None \
+                    and p.episode != q.episode:
+                continue
+            if p.season is not None and q.season is not None \
+                    and p.season != q.season:
+                continue
+            return True
+        return False
+
+    def __bool__(self) -> bool:
+        return bool(self.names or self.by_size)
+
+
+async def _drive_existing_index(cookie: str, user_id: str) -> _ExistingIndex:
+    """拉取用户网盘全部文件（list_all_files 递归列取，含大小），失败返回空索引。"""
     if not cookie:
-        return set()
+        return _ExistingIndex([])
     now = time.monotonic()
     hit = _drive_existing_cache.get(user_id)
     if hit and now - hit[0] < _DRIVE_EXISTING_TTL:
@@ -92,13 +141,13 @@ async def _drive_existing_names(cookie: str, user_id: str) -> set[str]:
     provider = QuarkDriveProvider(cookie=cookie, db_path=config.DB_PATH,
                                   user_id=user_id)
     try:
-        names = await provider.list_all_file_names()
+        index = _ExistingIndex(await provider.list_all_files())
     except Exception:  # 网盘列名失败不阻塞搜索，仅无提示
-        return set()
+        return _ExistingIndex([])
     finally:
         await provider.close()
-    _drive_existing_cache[user_id] = (now, names)
-    return names
+    _drive_existing_cache[user_id] = (now, index)
+    return index
 
 
 @router.get("/search")
@@ -139,8 +188,10 @@ async def candidates_search(request: Request, vtype: str = "movie", id: str = ""
     # "网盘中已有 N 项"实时补算：不依赖搜索缓存内容（detail 可能来自 1 天前
     # 的缓存），缓存命中与否两条路径都覆盖。计数进 existing_count（卡片 badge
     # 直显），逐文件 exists 标志供"查看内容"弹窗直接渲染绿勾——有效候选的
-    # detail 已含完整文件列表，点开弹窗无需再解析分享
-    existing = await _drive_existing_names(user_cookie, user["id"])
+    # detail 已含完整文件列表，点开弹窗无需再解析分享。
+    # 匹配规则（需求第 9 条）：精确大小匹配 + 粗略影片名匹配（转存后文件
+    # 已智能重命名为规范名，同名判断失效）
+    existing = await _drive_existing_index(user_cookie, user["id"])
     for c in cands:
         d = getattr(c, "detail", None)
         if not (d and d.get("files")):
@@ -148,11 +199,7 @@ async def candidates_search(request: Request, vtype: str = "movie", id: str = ""
         for f in d["files"]:
             nm = f.get("name") or ""
             if existing:
-                f["exists"] = nm in existing \
-                    or os.path.basename(nm) in existing
-            # 缓存中的旧 detail 无 warn：补算命名规范提示（与任务页同一规则；
-            # 搜索场景无季集目标，仅查无标题）
-            f.setdefault("warn", _name_warn(nm, None, None))
+                f["exists"] = existing.match(nm, f.get("size") or 0)
             # 规范文件名：无标题名结合搜索名/分享名/文件夹名兜底
             f.setdefault("canonical", canonical_with_context(
                 nm, search_title=keyword or "",
@@ -288,29 +335,24 @@ async def candidates_inspect(request: Request):
             url, (body.get("passcode") or "")[:32], cookie=cookie)
     except Exception as e:
         return JSONResponse({"detail": f"分享解析失败: {e}"}, status_code=400)
-    # 文件名不规范标志（与任务页同一规则，inspect 无季集目标，仅查无标题）
+    # 规范文件名兜底：无标题名结合搜索名/分享名/文件夹名（inspect 无季集目标）
     ctx_kw = (body.get("kw") or "").strip()
     ctx_title = (body.get("title") or "").strip()[:300]  # 候选/分享标题（前端传）
     for f in data.get("files", []):
         nm = f.get("name") or ""
-        f["warn"] = _name_warn(nm, None, None)
         # 规范文件名：无标题名结合搜索名/分享名/文件夹名兜底
         f["canonical"] = canonical_with_context(
             nm, search_title=ctx_kw, share_title=ctx_title,
             folder=_folder_of(f.get("path") or ""))
         _record_unparsed(nm, "search")
-    # "网盘中已存在"标记：实时比对用户网盘文件名集合（不随 inspect 缓存过期）
+    # "网盘中已存在"标记（需求第 9 条）：精确大小匹配 + 粗略影片名匹配
+    # （转存后文件已智能重命名为规范名，同名判断失效）
     data["existing_count"] = 0
     try:
-        provider = QuarkDriveProvider(cookie=cookie, db_path=config.DB_PATH,
-                                      user_id=user["id"])
-        try:
-            existing = await provider.list_all_file_names()
-        finally:
-            await provider.close()
+        existing = await _drive_existing_index(cookie, user["id"])
         for f in data.get("files", []):
-            nm = f.get("name") or ""
-            f["exists"] = nm in existing or os.path.basename(nm) in existing
+            f["exists"] = existing.match(f.get("name") or "",
+                                         f.get("size") or 0)
         data["existing_count"] = sum(1 for f in data.get("files", [])
                                      if f.get("exists"))
     except Exception:  # 网盘列名失败不阻塞分享解析，仅无提示
@@ -347,14 +389,25 @@ async def candidates_verify(request: Request):
     return {"results": await candidate_service.verify_links(items)}
 
 
+@router.get("/api/llm-status")
+async def llm_status(request: Request):
+    """AI 功能可用性（搜索页据此把【搜索】按钮替换为【AI 精选】）。"""
+    _, err = require_user(request)
+    if err:
+        return err
+    return {"enabled": llm.configured()}
+
+
 @router.post("/api/candidates/ai-review")
 async def candidates_ai_review(request: Request):
-    """AI 精选（高级功能，需管理员配置 LLM API）：对当前搜索候选做
-    筛选（剔除无关/垃圾资源）、重排序（推荐分）、去重分组与标题解析。
+    """AI 精选+解析（高级功能，需管理员配置 LLM API）：一次调用同时完成
+    候选筛选（剔除无关/垃圾资源）、重排序（推荐分）、去重分组与逐文件
+    影片信息解析（Title/SxxEyy/Year/Resolution/Source/Codec/Audio-Group）。
 
-    只接收候选元数据（标题/来源/发布时间/存活状态/内容摘要计数），
-    不含用户网盘文件列表；结果按输入内容哈希缓存（TTL 1 天），
-    相同输入不重复调用模型。未配置 LLM 时返回 501（前端隐藏入口）。"""
+    有效候选可附带 files（分享内完整文件路径，仅文件名，不含用户网盘
+    目录）；模型对每个文件给出规范名（canonical），服务端据此合并
+    原名/规范名的规格（spec）后返回，前端直接用于徽标与规范名展示。
+    结果按输入内容哈希缓存（TTL 1 天）。未配置 LLM 时返回 501。"""
     _, err = require_user(request)
     if err:
         return err
@@ -368,13 +421,14 @@ async def candidates_ai_review(request: Request):
     raw = body.get("candidates")
     if not isinstance(raw, list) or not raw:
         return JSONResponse({"detail": "candidates 不能为空"}, status_code=400)
-    # 输入规整为小而结构化的元数据（截断防注入与 token 膨胀），上限 30 条
-    cands = []
+    # 输入规整为小而结构化的元数据（截断防注入与 token 膨胀），上限 30 条；
+    # 仅有效候选（前端 inspect 过的）带 files，每候选最多 40 个文件
+    cands: list[dict] = []
     for it in raw[:30]:
         if not isinstance(it, dict):
             continue
         vc = it.get("video_count")
-        cands.append({
+        cand = {
             "title": str(it.get("title") or "")[:200],
             "source": str(it.get("source") or "")[:60],
             "published": str(it.get("published") or "")[:20],
@@ -382,7 +436,17 @@ async def candidates_ai_review(request: Request):
             "video_count": vc if isinstance(vc, int)
                            and not isinstance(vc, bool) else None,
             "total_size_h": str(it.get("total_size_h") or "")[:20],
-        })
+        }
+        files = []
+        for f in (it.get("files") or [])[:40]:
+            if not isinstance(f, dict):
+                continue
+            path = str(f.get("path") or "").strip()[:200]
+            if path:
+                files.append({"path": path})
+        if files:
+            cand["files"] = files
+        cands.append(cand)
     if not cands:
         return JSONResponse({"detail": "无有效的候选数据"}, status_code=400)
     season = body.get("season")
@@ -397,6 +461,16 @@ async def candidates_ai_review(request: Request):
             season=season)
     except llm.LLMError as e:
         return JSONResponse({"detail": f"AI 处理失败: {e}"}, status_code=502)
+    # 逐文件补充：规范名来源标记 + 合并原名/规范名的规格（徽标展示用，
+    # 中文名常带 中英双字/Atmos 等字幕音轨信息，规范名可能带分辨率/来源）
+    for it in items:
+        cand = cands[it["index"]] if it["index"] < len(cands) else {}
+        raw_files = cand.get("files") or []
+        for pf in it.get("files") or []:
+            i = pf.get("i")
+            orig = raw_files[i]["path"] if isinstance(i, int) and i < len(raw_files) else ""
+            pf["source"] = "ai" if pf.get("canonical") else None
+            pf["spec"] = _spec_merge(orig, pf.get("canonical") or "")
     return {"items": items}
 
 
@@ -475,51 +549,46 @@ def _spec_badges(name: str) -> list[str]:
     return out
 
 
-# 仅剩季集/集数 token 的"无标题"文件名（如 SE03.11 / 06 / EP06 / 第11集）——
-# 与 matcher 一样无法凭标题定位，换源或分享重发后会匹配失败
-_TITLELESS_TOKEN = re.compile(
-    r"(?i)^(?:s\d{1,2}e\d{1,3}|se\d{1,2}(?:[.\-_ ]?\d{1,3})?|\d{1,3}x\d{1,3}|"
-    r"ep?\d{1,3}|s\d{1,2}|e\d{1,3}|\d{1,3}|"
-    r"第\s*\d{1,3}\s*[集话期]|第\s*[0-9一二三四五六七八九十百]+\s*季)$")
+def _spec_merge(*names: str) -> dict:
+    """合并多个文件名的规格（spec_dict）；标量维度前者优先，列表维度并集。
 
-
-def _is_meta_token(t: str) -> bool:
-    """token 是否为季集/集数标注（无标题判定时剥除）。
-    4 位纯数字仅在年份区间（1900-2099）外视为集数（如长篇 1001 集），
-    区间内保留为可能的片名（如《2012》《1917》）。"""
-    if _TITLELESS_TOKEN.match(t):
-        return True
-    return t.isdigit() and len(t) == 4 and not (1900 <= int(t) <= 2099)
-
-
-def _name_warn(name: str, season: int | None, episode: int | None) -> str:
-    """文件名疑似不符合匹配规范时的修改提示（命名应含标题与季集信息）。
-    规则与 Stream 侧 matcher 一致：仅视频文件参与检查；剥除季集/集数标注后
-    无剩余文字视为无标题；剧集任务解析不出集数（含裸集数文件名）同样提示。"""
-    if os.path.splitext(name)[1].lower() not in VIDEO_EXTS:
-        return ""  # 非视频文件（nfo/海报等）不参与命名规范检查
-    p = parse(name)
-    stem = re.sub(r"^\[.*?\]", "", os.path.splitext(name)[0])
-    if not [t for t in re.split(r"[\s._\-\[\]()]+", stem)
-            if t and not _is_meta_token(t)]:
-        return "未识别出标题，建议改为「影片名 S01E02」等规范命名"
-    if episode is not None and p.episode is None:
-        return "未识别出集数，建议在文件名中补充 SxxEyy 标注"
-    if season is not None and p.season is not None and p.season != season:
-        return f"文件名标注为第 {p.season} 季，与任务目标第 {season} 季不符"
-    return ""
+    AI 规范名通常带 分辨率/来源/编码，原名常带 字幕/音轨信息（如 中英双字），
+    合并后徽标信息最全。"""
+    spec: dict = {}
+    for nm in names:
+        if not nm:
+            continue
+        for k, v in spec_dict(nm).items():
+            if isinstance(v, list):
+                cur = spec.setdefault(k, [])
+                for x in v:
+                    if x not in cur:
+                        cur.append(x)
+            elif v and not spec.get(k):
+                spec[k] = v
+    return spec
 
 
 def _task_files(task: dict) -> list[dict]:
-    """COMPLETED 任务的落盘文件明细：文件名/大小/规格/命名规范提示/网盘已有标记。"""
+    """COMPLETED 任务的落盘文件明细（需求第 10 条）：
+
+    - name：原名（分享内文件名）；final：重命名后的规范名（未改名=原名）；
+    - renamed/canonical_source：智能重命名标记与来源（ai=AI 规范名）；
+    - season/episode/spec：从最终名+原名合并解析（SxxEyy 徽标与规格展示）；
+    - exists：转存前网盘已有标记（worker 防重检测结果）。"""
     try:
         result = json.loads(task.get("result_json") or "{}")
     except ValueError:
         result = {}
-    existed = set(result.get("existed") or [])  # 转存前网盘已有同名（提示不拦截）
+    existed = set(result.get("existed") or [])  # 转存前网盘已有（提示不拦截）
+    # 智能重命名（需求第 8 条）：renamed 为实际改名成功的对照，rename_map 为计划
+    renamed = {a: b for a, b in (result.get("renamed") or [])}
+    plan = {os.path.basename(k): v
+            for k, v in (result.get("rename_map") or {}).items()}
     raw: list[dict] = []
     if result.get("name"):  # 单文件定位（targeted）
-        raw = [{"name": result["name"], "size": result.get("size") or 0}]
+        raw = [{"name": result.get("origin_name") or result["name"],
+                "size": result.get("size") or 0}]
     elif result.get("files"):  # 整包/多选落盘清单
         raw = list(result["files"])
     elif result.get("names"):  # 老任务仅有路径列表（无 size）
@@ -528,20 +597,32 @@ def _task_files(task: dict) -> list[dict]:
         # 历史任务兜底：老版 worker 落盘清单用网盘模糊搜索补全，混入同目录
         # 其他任务的文件；picks 按本次实际所选文件名过滤（显示层修复）
         want = {os.path.basename(n) for n in result["names"]}
-        raw = [f for f in raw if os.path.basename(f["name"]) in want]
+        raw = [f for f in raw
+               if os.path.basename(f.get("origin") or f["name"]) in want]
     for f in raw:
+        origin = f.get("origin") or f["name"]  # worker 改名后 origin 存原名
+        final = renamed.get(origin) or plan.get(origin) or origin
+        f["name"] = origin
+        f["final"] = final
+        f["renamed"] = final != origin
+        f["canonical_source"] = "ai" if (f["renamed"] and result.get("ai_renamed")) \
+            else ("parser" if f["renamed"] else "")
+        info = name_parser.parse(final)
+        f["season"], f["episode"] = info.season, info.episode
         f["size_h"] = _human_size(f.get("size") or 0)
-        f["spec"] = _spec_badges(f["name"])
-        f["warn"] = _name_warn(f["name"], task.get("season"),
-                               task.get("episode"))
-        f["name_ok"] = not f["warn"]
-        # 规范文件名：任务锚定影片标题（title）与分享资源标题兜底
-        f["canonical"] = canonical_with_context(
-            f["name"], search_title=task.get("title") or "",
-            share_title=task.get("candidate_title") or "")
-        f["exists"] = f["name"] in existed or \
-            os.path.basename(f["name"]) in existed
-        _record_unparsed(f["name"], "task")
+        f["spec"] = _spec_badges(final)
+        for v in _spec_badges(origin):  # 原名里的字幕/音轨等规格并进去
+            if v not in f["spec"]:
+                f["spec"].append(v)
+        if f["renamed"]:
+            f["canonical"] = final  # 已按规范名落盘
+        else:  # 未改名：展示规范名建议
+            f["canonical"] = canonical_with_context(
+                origin, search_title=task.get("title") or "",
+                share_title=task.get("candidate_title") or "")
+        f["exists"] = origin in existed or \
+            os.path.basename(origin) in existed
+        _record_unparsed(origin, "task")
     return raw
 
 
@@ -568,4 +649,12 @@ async def task_api(request: Request, task_id: str):
     task["save_dir"] = settings.get("TRANSFER_DIR")  # 落盘目录名（任务页展示用）
     if task["status"] == "COMPLETED":
         task["files"] = _task_files(task)  # 落盘文件明细（含规格与命名提示）
+        try:  # 智能重命名摘要（需求第 8 条：任务页展示 + 记录文件名）
+            result = json.loads(task.get("result_json") or "{}")
+        except ValueError:
+            result = {}
+        if result.get("renamed"):
+            task["renamed_count"] = len(result["renamed"])
+        if result.get("rename_map") or result.get("renamed"):
+            task["rename_note"] = f"已有{settings.get('APP_NAME')}智能重命名.txt"
     return task

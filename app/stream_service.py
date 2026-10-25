@@ -3,6 +3,7 @@ import json
 import logging
 
 from . import config, db, settings
+from .name_parser import parser as name_parser
 from .tmdb import VideoMeta, fetch_meta
 from .matcher import MovieMatcher, episode_of, parse
 from .providers.base import CloudDriveProvider, CloudFile, ProviderAuthError, ProviderError
@@ -18,6 +19,23 @@ _STATUS_TEXT = {
     "FAILED": "转存失败",
     "EXPIRED": "任务超时或失效",
 }
+
+
+def _spec_emoji_line(info) -> str:
+    """文件名规格 → Stremio 描述行（需求第 11 条）：
+    🎬 分辨率/来源/编码 ✨ 附加（HDR/DV等） 🎧 音频 💬 字幕/语言。"""
+    parts = []
+    main = [v for v in (info.resolution, info.source, info.codec) if v]
+    if main:
+        parts.append("🎬 " + " · ".join(main))
+    if info.extras:
+        parts.append("✨ " + "/".join(info.extras))
+    if info.audio:
+        parts.append("🎧 " + "/".join(info.audio))
+    sub = list(dict.fromkeys([*info.subtitle, *info.languages]))
+    if sub:
+        parts.append("💬 " + "/".join(sub))
+    return " ".join(parts)
 
 
 def parse_video_id(video_id: str) -> tuple[str, int | None, int | None]:
@@ -199,18 +217,22 @@ class StreamService:
         }]
 
     def _to_stream(self, resource, reason: str) -> dict:
-        quality = parse(resource.filename).resolution or ""
+        info = name_parser.parse(resource.filename)
+        quality = info.resolution or ""
         hints = {
             "notWebReady": True,  # 客户端直连 CDN，需携带请求头（Web 端不支持）
-            "bingeGroup": f"{resource.source_name}-{parse(resource.filename).title or 'video'}",
+            "bingeGroup": f"{resource.source_name}-{info.title or 'video'}",
             "filename": resource.filename,
             "videoSize": resource.video_size,
             "proxyHeaders": {"request": resource.headers},
         }
+        spec_line = _spec_emoji_line(info)
+        desc = f"{reason}\n{spec_line}\n{resource.filename}" if spec_line \
+            else f"{reason}\n{resource.filename}"
         return {
             "url": resource.url,
             "name": f"{resource.source_name}\n{quality}".rstrip(),
             "title": resource.filename,
-            "description": f"{reason}\n{resource.filename}",
+            "description": desc,
             "behaviorHints": hints,
         }

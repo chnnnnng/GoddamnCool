@@ -330,3 +330,18 @@ def test_health():
     r = client.get("/health")
     assert r.status_code == 200
     assert r.json()["status"] == "ok"
+
+
+# ---------- 流结果规格 emoji 行（需求第 11 条） ----------
+
+def test_spec_emoji_line():
+    info = ss.name_parser.parse(
+        "余罪.S01E01.2016.2160p.WEB-DL.H265.HDR.Atmos.中英双字.mp4")
+    line = ss._spec_emoji_line(info)
+    assert line == "🎬 2160p · WEB-DL · H.265 ✨ HDR 🎧 Atmos 💬 中英双字"
+
+
+def test_spec_emoji_line_minimal():
+    assert ss._spec_emoji_line(ss.name_parser.parse("余罪.S01E01.mp4")) == ""
+    line = ss._spec_emoji_line(ss.name_parser.parse("Show.1080p.mkv"))
+    assert line == "🎬 1080p"

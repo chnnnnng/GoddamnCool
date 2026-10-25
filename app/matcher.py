@@ -15,6 +15,7 @@ from difflib import SequenceMatcher
 
 from pypinyin import lazy_pinyin
 
+from .name_parser import parser as name_parser
 from .tmdb import VideoMeta
 from .providers.base import CloudFile
 
@@ -165,6 +166,29 @@ def parse(filename: str) -> ParsedName:
     return p
 
 
+def rough_title_match(a, b, *, min_sim: float = 0.75) -> bool:
+    """粗略影片名匹配（配合"精确文件大小匹配"使用）。
+
+    转存文件会智能重命名为规范名，"已在网盘"不能再用同名判断；
+    改用 精确大小（调用方负责）+ 粗略片名：片名相似（支持跨语言拼音）
+    且季集不冲突即视为同一内容。a/b 可为文件名字符串或已解析对象
+    （需含 title/title_en/season/episode 属性，如 name_parser.ParsedInfo）。"""
+    pa = a if not isinstance(a, str) else name_parser.parse(a)
+    pb = b if not isinstance(b, str) else name_parser.parse(b)
+    ta, tb = pa.title or pa.title_en, pb.title or pb.title_en
+    if not ta or not tb:
+        return False
+    if _title_keys_similarity(ta, tb) < min_sim:
+        return False
+    if pa.episode is not None and pb.episode is not None \
+            and pa.episode != pb.episode:
+        return False
+    if pa.season is not None and pb.season is not None \
+            and pa.season != pb.season:
+        return False
+    return True
+
+
 class MovieMatcher:
     """对 CloudFile 列表评分，返回置信度降序的候选。"""
 
@@ -179,6 +203,9 @@ class MovieMatcher:
     def match(self, files: list[CloudFile], meta: VideoMeta,
               season: int | None = None, episode: int | None = None) -> list[MatchResult]:
         results = []
+        # 规范名可能是拼音/英文（如 "Yu.Zui.S02E05..."），meta 主名是中文（如"余罪"）：
+        # 三个名字都参与相似度比较，避免跨语言匹配失败
+        meta_titles = {t for t in (meta.title, meta.name_zh, meta.name_en) if t}
         for f in files:
             if f.is_dir:
                 continue
@@ -188,7 +215,7 @@ class MovieMatcher:
             if JUNK_PATTERN.search(f.name):
                 continue
 
-            sim = self._title_similarity(p.title, meta.title)
+            sim = max(self._title_similarity(p.title, t) for t in meta_titles)
             if sim < 0.5:
                 continue
 

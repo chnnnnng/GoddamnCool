@@ -2,6 +2,8 @@
  * 搜索结果单栏直显内容详情摘要（灰字统计 + 季集/规格 badge 行），卡片按钮按
  * 内容自动切换 全部剧集/当前剧集；「查看内容」弹窗提供独立【转存全部剧集】
  * 按钮（多视频时）与动态主按钮（点选文件行 → 转存所选（N），未选 → 当前剧集）。
+ * 管理员配置 LLM API 后，主按钮替换为【AI 精选】：一键完成
+ * PanSou 搜索 → AI 精选+文件名解析 → 用户已有内容匹配 → 显示结果。
  * 默认只显示检测"有效"的结果；TV 端方向键空间导航（spatial-nav.js）。 */
 'use strict';
 const params = new URLSearchParams(location.search);
@@ -36,7 +38,7 @@ const $ = (id) => document.getElementById(id);
 const kwEl = $('kw'), btnEl = $('btn'), metaEl = $('meta'), listEl = $('list'),
   diskEl = $('diskchips'), aliveEl = $('alivechips'), msgEl = $('msg'),
   footEl = $('foot'), modalEl = $('modal'), mtitleEl = $('mtitle'),
-  mbodyEl = $('mbody'), mcloseEl = $('mclose'), aiBtnEl = $('btn-ai');
+  mbodyEl = $('mbody'), mcloseEl = $('mclose');
 
 function el(tag, cls, text) {
   const e = document.createElement(tag);
@@ -51,6 +53,38 @@ function showMsg(text, ok) {
 function pad(n) { return String(n).padStart(2, '0'); }
 function labelOf(c) {
   return `S${pad(c.season)}E${pad(c.episode)}`;
+}
+function humanSize(n) {
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let i = 0, v = Number(n) || 0;
+  while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+  return (i ? v.toFixed(1) : v) + units[i];
+}
+function seasonCn(n) {
+  /* 季数 → 中文（需求第 5 条：【第二季·8集·20GB】） */
+  const d = ['零', '一', '二', '三', '四', '五', '六', '七', '八', '九', '十'];
+  n = Math.max(0, Number(n) || 0);
+  if (n <= 10) return d[n];
+  if (n < 20) return '十' + d[n - 10];
+  return d[Math.floor(n / 10)] + '十' + (n % 10 ? d[n % 10] : '');
+}
+function seasonChip(s) {
+  return s.season ? `第${seasonCn(s.season)}季·${s.count}集·${s.size_h}`
+    : `共 ${s.count} 集 · ${s.size_h}`;
+}
+function aggregateSeasons(d) {
+  /* 按季聚合文件（季数来自规则解析+AI 解析），返回 seasons 数组。
+     AI 应用后文件季集可能变化，需在前端重算（需求第 5 条）。 */
+  const m = new Map();
+  for (const f of (d.files || [])) {
+    if (f.season == null) continue;
+    const e = m.get(f.season) || { season: f.season, count: 0, size: 0 };
+    e.count++; e.size += Number(f.size) || 0;
+    m.set(f.season, e);
+  }
+  return [...m.values()]
+    .map((e) => ({ season: e.season, count: e.count, size_h: humanSize(e.size) }))
+    .sort((a, b) => a.season - b.season);
 }
 
 /* ---- 规格格式化（后端 MessyNameParser 返回对象：resolution/source/codec/audio/subtitle/languages/extras） ---- */
@@ -118,14 +152,18 @@ function buildAliveChips() {
 
 /* ---- 搜索 ---- */
 let lastKw = '';  // 最近一次搜索关键词（inspect 请求的无标题文件名兜底上下文）
+function updateMainBtn() {
+  /* 主按钮文案（需求第 2 条）：管理员配置 LLM 后替换为【AI 精选】 */
+  if (!btnEl.disabled) btnEl.textContent = llmEnabled ? 'AI 精选' : '搜索';
+}
 async function dosearch() {
   const kw = kwEl.value.trim();
   lastKw = kw;
   if (!kw && !anchored) { kwEl.focus(); return; }  // 锚定模式空关键词由服务端 TMDB 双语名补齐
   btnEl.disabled = true;
-  btnEl.textContent = '搜索中…';
+  btnEl.textContent = llmEnabled ? 'AI 搜索中…' : '搜索中…';
   listEl.textContent = '';
-  showLoading('搜索中…');  // 顶部气泡 + spinner 动画
+  showLoading(llmEnabled ? 'AI 搜索中…' : '搜索中…');  // 顶部气泡 + spinner 动画
   clearTimeout(verifyTimer);
   try {
     const q = new URLSearchParams({ kw });
@@ -144,16 +182,26 @@ async function dosearch() {
     aiApplied = false;
     for (const c of lastCands) delete c.ai;
     llmEnabled = !!data.llm_enabled;
-    updateAiBtn();
     renderResults();
     verifyTimer = setTimeout(verifyLinks, 500);
+    if (llmEnabled && lastCands.length) {
+      // AI 精选链条（需求第 2 条）：PanSou 搜索 → AI 精选+解析 →
+      // 用户已有内容匹配（搜索响应已含）→ 显示结果，一键完成
+      btnEl.textContent = 'AI 精选中…';
+      showLoading('AI 精选中…');
+      try {
+        await applyAiReview();
+      } catch (e) {
+        showMsg('AI 精选失败：' + (e.message || e) + '（已展示基础搜索结果）', false);
+      }
+    }
   } catch (e) {
     showMsg('搜索失败：' + (e.message || e), false);
     metaEl.textContent = '';
   } finally {
     hideLoading();
     btnEl.disabled = false;
-    btnEl.textContent = '搜索';
+    updateMainBtn();
   }
 }
 
@@ -177,57 +225,71 @@ async function verifyLinks() {
   } catch { /* 兜底失败保持未检测状态 */ }
 }
 
-/* ---- AI 精选（管理员配置 LLM 后可用；结果服务端缓存 1 天） ---- */
-function updateAiBtn() {
-  aiBtnEl.hidden = !llmEnabled || !lastCands.length;
-  aiBtnEl.textContent = aiApplied ? '退出 AI 精选' : 'AI 精选';
-}
+/* ---- AI 精选+解析（管理员配置 LLM 后自动执行；结果服务端缓存 1 天） ---- */
 function aiRank(c) {
   /* AI 排序键：推荐 → 重复组跟随 → 被剔除沉底；同级按推荐分降序 */
   if (!c.ai || c.ai.keep === undefined) return 3;
   if (c.ai.keep === false) return 2;
   return c.ai.dup_of != null ? 1 : 0;
 }
-async function toggleAiReview() {
-  if (aiApplied) {  // 还原：清空 AI 结果，回到服务端原始排序
-    aiApplied = false;
-    for (const c of lastCands) delete c.ai;
-    updateAiBtn();
-    renderResults();
-    return;
+const AI_VIDEO_RE = /\.(mp4|mkv|avi|mov|wmv|flv|webm|m2ts|ts|mpg|mpeg|rmvb|rm|3gp|m4v|iso)$/i;
+async function applyAiReview() {
+  /* AI 精选+文件名解析一次完成（需求第 3 条）：输入除候选元数据外，
+     附带有效候选的分享内视频文件完整路径（过滤海报/nfo 等噪声省 token，
+     仅文件名不含用户网盘目录）；返回逐文件规范名/季集/合并规格，
+     按发送时的过滤数组回填（pf.i 对应该数组下标）。 */
+  const sent = lastCands.map((c) => {
+    const vf = ((c.detail && c.detail.files) || [])
+      .filter((f) => AI_VIDEO_RE.test((f.path || f.name || '').replace(/\\/g, '/').split('/').pop() || ''))
+      .slice(0, 40);
+    return {
+      cand: {
+        title: c.title, source: c.source, published: c.published,
+        alive_state: c.alive_state,
+        video_count: c.detail ? c.detail.video_count : null,
+        total_size_h: c.detail ? c.detail.total_size_h : '',
+        files: vf.map((f) => ({ path: f.path || f.name })),
+      },
+      files: vf,  // 原对象引用：回填时按过滤后下标定位
+    };
+  });
+  const data = await api('/api/candidates/ai-review', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      keyword: lastKeyword,
+      title: lastMeta ? lastMeta.title : '',
+      season: curSeason,
+      candidates: sent.map((s) => s.cand),
+    }),
+  });
+  const by = {};
+  (data.items || []).forEach((it) => { by[it.index] = it; });
+  lastCands.forEach((c, i) => {
+    const it = by[i];
+    if (!it) return;
+    c.ai = it;
+    if (it.files && it.files.length && sent[i].files.length) {
+      for (const pf of it.files) {
+        const f = sent[i].files[pf.i];
+        if (!f) continue;
+        if (pf.canonical) { f.canonical = pf.canonical; f.canonical_source = 'ai'; }
+        if (pf.season != null) f.season = pf.season;
+        if (pf.episode != null) f.episode = pf.episode;
+        if (pf.spec) f.spec = pf.spec;  // 服务端已合并原名/规范名的规格
+      }
+      const seasons = aggregateSeasons(c.detail);  // 季集已更新，重算聚合
+      if (seasons.length) c.detail.seasons = seasons;
+    }
+  });
+  aiApplied = true;
+  renderResults();
+  if (modalEl.hidden === false && modalCand) {  // 弹窗开着：重渲染应用 AI 结果
+    mbodyEl.textContent = '';
+    mbodyEl.appendChild(renderDetail(modalCand, modalCand.detail));
   }
-  aiBtnEl.disabled = true;
-  aiBtnEl.textContent = 'AI 分析中…';
-  try {
-    const data = await api('/api/candidates/ai-review', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        keyword: lastKeyword,
-        title: lastMeta ? lastMeta.title : '',
-        season: curSeason,
-        candidates: lastCands.map((c) => ({
-          title: c.title, source: c.source, published: c.published,
-          alive_state: c.alive_state,
-          video_count: c.detail ? c.detail.video_count : null,
-          total_size_h: c.detail ? c.detail.total_size_h : '',
-        })),
-      }),
-    });
-    const by = {};
-    (data.items || []).forEach((it) => { by[it.index] = it; });
-    lastCands.forEach((c, i) => { c.ai = by[i] || null; });
-    aiApplied = true;
-    updateAiBtn();
-    renderResults();
-    const kept = (data.items || []).filter((it) => it.keep !== false).length;
-    showMsg(`AI 精选完成：${kept}/${lastCands.length} 个候选被推荐（相同搜索结果 1 天内不重复调用）`, true);
-  } catch (e) {
-    showMsg('AI 精选失败：' + (e.message || e), false);
-  } finally {
-    aiBtnEl.disabled = false;
-    updateAiBtn();
-  }
+  const kept = (data.items || []).filter((it) => it.keep !== false).length;
+  showMsg(`AI 精选完成：${kept}/${lastCands.length} 个候选被推荐，文件名已智能解析（相同搜索结果 1 天内不重复调用）`, true);
 }
 function aiTip(c) {
   const a = c.ai || {};
@@ -237,41 +299,6 @@ function aiTip(c) {
     (a.season != null ? ` 第${a.season}季` : '') +
     (a.year != null ? `（${a.year}）` : ''));
   return parts.join('\n');
-}
-
-/* ---- AI 兜底解析无标题文件名（查看内容弹窗内） ---- */
-function folderOf(p) {
-  const seg = String(p || '').replace(/\\/g, '/').split('/');
-  seg.pop();
-  return seg.length ? seg[seg.length - 1] : '';
-}
-async function aiParseFiles(btn, c) {
-  const d = c.detail;
-  const untitled = (d.files || []).filter((f) => f.warn);
-  btn.disabled = true;
-  btn.textContent = 'AI 解析中…';
-  try {
-    const data = await api('/api/candidates/ai-parse', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ names: untitled.map((f) => ({
-        name: f.name,
-        search_title: lastKw,
-        share_title: c.title || '',
-        folder: folderOf(f.path || f.name),
-      })) }),
-    });
-    const by = {};
-    (data.items || []).forEach((it) => { by[it.index] = it; });
-    untitled.forEach((f, i) => { f.ai = by[i] || null; });
-    mbodyEl.textContent = '';  // 重渲染弹窗，文件行回填 AI 徽标
-    mbodyEl.appendChild(renderDetail(c, d));
-    showMsg('AI 解析完成（结果仅供命名参考，相同文件名 1 天内不重复调用）', true);
-  } catch (e) {
-    showMsg('AI 解析失败：' + (e.message || e), false);
-    btn.disabled = false;
-    btn.textContent = 'AI 解析文件名';
-  }
 }
 
 /* ---- 渲染 ---- */
@@ -339,7 +366,7 @@ function renderCard(c) {
   const sum = c.detail || c.summary;
   if (sum && sum.existing_count) {
     const ex = el('span', 'vstate v-ok', `网盘中已有 ${sum.existing_count} 项`);
-    ex.title = '网盘中已有同名文件，转存仍会执行（重名将由网盘自动处理）';
+    ex.title = '按 精确文件大小+粗略片名 匹配（转存后会智能重命名为规范名，同名判断不适用），转存仍会执行';
     badges.appendChild(ex);
   }
   card.appendChild(badges);
@@ -392,12 +419,9 @@ function renderCard(c) {
 }
 
 function appendDetailSummary(card, d) {
-  /* 季集与影片规格 badges 同行显示 */
+  /* 季集与影片规格 badges 同行显示（季集为中文格式，需求第 5 条） */
   const chips = el('div', 'seas');
-  for (const s of (d.seasons || [])) {
-    chips.appendChild(el('span', 'seaschip',
-      s.season ? `S${pad(s.season)} · ${s.count} 集 · ${s.size_h}` : `共 ${s.count} 集 · ${s.size_h}`));
-  }
+  for (const s of (d.seasons || [])) chips.appendChild(el('span', 'seaschip', seasonChip(s)));
   for (const t of aggregateSpec(d)) chips.appendChild(el('span', 'seaschip', t));
   if (chips.children.length) card.appendChild(chips);
   const sum = el('div', 'dsum',
@@ -471,12 +495,9 @@ function renderDetail(c, d) {
   const isSeries = isSeriesLike(d);
   const files = d.files || [];
   const wrap = el('div');
-  /* 季集与影片规格 badges 同行显示 */
+  /* 季集与影片规格 badges 同行显示（与卡片一致的中文季集格式，需求第 6 条） */
   const chips = el('div', 'seas');
-  for (const s of (d.seasons || [])) {
-    chips.appendChild(el('span', 'seaschip',
-      s.season ? `S${pad(s.season)} · ${s.count} 集 · ${s.size_h}` : `共 ${s.count} 集 · ${s.size_h}`));
-  }
+  for (const s of (d.seasons || [])) chips.appendChild(el('span', 'seaschip', seasonChip(s)));
   for (const t of aggregateSpec(d)) chips.appendChild(el('span', 'seaschip', t));
   if (chips.children.length) wrap.appendChild(chips);
   wrap.appendChild(el('div', 'dsum',
@@ -524,38 +545,33 @@ function renderDetail(c, d) {
     row._ep = f.season != null || f.episode != null
       ? `${f.season != null ? 'S' + pad(f.season) : ''}${f.episode != null ? 'E' + pad(f.episode) : ''}`
       : '';
-    const nm = el('div', 'nm', f.path || f.name);
-    row.appendChild(nm);
-    if (f.canonical && f.canonical !== (f.path || f.name)) {
-      // 规范文件名（服务端解析 + 搜索名/分享名/文件夹名兜底）
+    /* 文件行布局（需求第 7 条）：【SxxEyy】badge 最前 → 原名称 →
+       规范名（AI 或 name_parser）→ 信息行；右侧为
+       【已在网盘】+【AI智能解析/智能解析】badge，不再展示"文件名不规范" */
+    if (row._ep) row.appendChild(el('span', 'ep', row._ep));
+    const disp = f.path || f.name;
+    row.appendChild(el('div', 'nm', disp));
+    if (f.canonical && f.canonical !== disp) {
       const cn = el('div', 'cname', '→ ' + f.canonical);
-      cn.title = '规范文件名（按此命名可被媒体库正确识别）';
+      cn.title = f.canonical_source === 'ai'
+        ? 'AI 智能规范名（结合搜索词/分享标题/目录推断）'
+        : '规范文件名（按此命名可被媒体库正确识别）';
       row.appendChild(cn);
     }
     const sp = formatSpec(f.spec);
     row.appendChild(el('div', 'fmeta',
       `${f.size_h}${sp ? ' · ' + sp : ''}${row._ep ? ' · ' + row._ep : ''}`));
-    if (row._ep) row.appendChild(el('span', 'ep', row._ep));
-    if (f.exists) {  // 转存前网盘已有同名文件：绿勾提示（不拦截转存）
+    if (f.exists) {  // 精确大小+粗略片名匹配命中：绿勾提示（不拦截转存）
       const tick = el('span', 'badge tick', '✓ 已在网盘');
-      tick.title = '网盘中已有同名文件，转存仍会执行（重名将由网盘自动处理）';
+      tick.title = '按 精确文件大小+粗略片名 匹配到网盘已有文件，转存仍会执行';
       row.appendChild(tick);
     }
-    if (f.warn) {  // 文件名疑似不符合规范（无标题等），与任务页同一规则
-      const w = el('span', 'badge warn', '⚠ 文件名不规范');
-      w.title = f.warn;
-      row.appendChild(w);
-    }
-    if (f.ai) {  // AI 兜底解析结果（弹窗内点「AI 解析文件名」后回填）
-      const a = f.ai;
-      const txt = a.title
-        ? 'AI: ' + a.title
-          + (a.season != null ? ' S' + pad(a.season) : '')
-          + (a.episode != null ? 'E' + pad(a.episode) : '')
-        : 'AI: 无法识别';
-      const b = el('span', 'badge' + (a.confident ? ' tick' : ''), txt);
-      b.title = (a.confident ? 'AI 解析（有明确依据）' : 'AI 猜测（仅供参考）')
-        + '：据此可规范命名为 影片名 SxxEyy';
+    if (f.canonical && f.canonical !== disp) {  // 智能解析标记（替代 AI 名 badge）
+      const b = el('span', 'badge' + (f.canonical_source === 'ai' ? ' tick' : ''),
+        f.canonical_source === 'ai' ? 'AI智能解析' : '智能解析');
+      b.title = f.canonical_source === 'ai'
+        ? 'AI 解析出的规范文件名'
+        : '规则解析出的规范文件名';
       row.appendChild(b);
     }
     const toggle = () => {
@@ -570,16 +586,6 @@ function renderDetail(c, d) {
   wrap.appendChild(list);
   wrap.appendChild(el('div', 'hint',
     '点选文件行可仅转存所选剧集（再次点击取消）。'));
-
-  /* AI 兜底解析入口：弹窗内存在无标题文件名且管理员已配置 LLM 时提供，
-     结果（影片名/季/集）以徽标回填到对应文件行（服务端缓存 1 天） */
-  if (llmEnabled && files.some((f) => f.warn)) {
-    const pbtn = el('button', 'sec', 'AI 解析文件名');
-    pbtn.type = 'button';
-    pbtn.title = '使用 AI 结合搜索词/分享标题/文件夹名推断无标题文件名的影片名与季集';
-    pbtn.onclick = () => aiParseFiles(pbtn, c);
-    wrap.appendChild(pbtn);
-  }
 
   const acts = el('div', 'actions');
   updateMainBtn();
@@ -626,11 +632,14 @@ footEl.textContent = '本工具仅聚合第三方公开的网盘分享链接，�
 /* ---- 初始化 ---- */
 buildChips();
 btnEl.onclick = dosearch;
-aiBtnEl.onclick = toggleAiReview;
 
 /* ---- 顶部导航 ---- */
 var logoutBtn = document.getElementById('btn-logout');
 if (logoutBtn) logoutBtn.addEventListener('click', function () { logout(); });
 kwEl.addEventListener('keydown', (e) => { if (e.key === 'Enter') dosearch(); });
+(async () => {  // 管理员配置 LLM 后，主按钮直接替换为【AI 精选】（需求第 2 条）
+  try { llmEnabled = !!(await api('/api/llm-status')).enabled; } catch { /* 保持基础搜索 */ }
+  updateMainBtn();
+})();
 if (anchored) dosearch();
 else kwEl.focus();

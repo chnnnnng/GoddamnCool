@@ -23,10 +23,11 @@ from . import config, db, settings
 
 log = logging.getLogger(__name__)
 
-_TIMEOUT = 60.0      # 单次 chat completions 超时（秒）
+_TIMEOUT = 180.0     # 单次 chat completions 超时（秒）——精选+解析合并任务
+                     # 输入/输出都大（30 候选 × 40 文件规范名），60s 会超时
 _CACHE_TTL = 86400.0  # AI 结果缓存（1 天，与搜索结果缓存一致）
 _MASK_MARK = "••••"   # API Key 回显打码标记（含此标记的提交视为"未修改"）
-REVIEW_SKILL_VERSION = 1
+REVIEW_SKILL_VERSION = 2  # v2：精选+文件名解析合并为一次调用（升级使旧缓存失效）
 PARSE_SKILL_VERSION = 1
 
 
@@ -52,15 +53,22 @@ def is_masked(value: str) -> bool:
     return _MASK_MARK in (value or "")
 
 
+def _chat_payload(model: str, messages: list[dict], temperature: float) -> dict:
+    """构造请求体。Qwen3 等思考型模型关闭思考链（DashScope 兼容模式参数
+    enable_thinking=false，响应更快、token 更省）；其他 provider 不认该参数
+    会 400，故仅按模型名软启用。"""
+    payload = {"model": model, "messages": messages, "temperature": temperature}
+    if "qwen" in model.lower():
+        payload["enable_thinking"] = False
+    return payload
+
+
 async def chat(messages: list[dict], *, temperature: float = 0.2) -> str:
     """调用 OpenAI 兼容 chat completions，返回首条回复文本。"""
     base = settings.get("LLM_API_BASE").strip().rstrip("/")
     url = f"{base}/chat/completions"
-    payload = {
-        "model": settings.get("LLM_MODEL").strip(),
-        "messages": messages,
-        "temperature": temperature,
-    }
+    payload = _chat_payload(settings.get("LLM_MODEL").strip(), messages,
+                            temperature)
     headers = {"Authorization": f"Bearer {settings.get('LLM_API_KEY').strip()}"}
     try:
         async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
@@ -105,29 +113,39 @@ def _int_or_none(v):
     return int(v)
 
 
-# ---- AI 精选：候选筛选 / 评分重排 / 去重分组 / 标题解析 ----
+# ---- AI 精选 + 文件名解析（一次调用完成两项任务） ----
 
-REVIEW_SKILL = """你是网盘影视资源搜索结果的甄别助手。根据目标影片信息与候选资源列表，完成四项任务：
-1. 筛选：剔除与目标影片无关、或疑似垃圾内容（预告片/花絮/广告/凑数压缩包/挂羊头卖狗肉）的候选；
+REVIEW_SKILL = """你是网盘影视资源搜索结果的甄别与解析助手。根据目标影片信息与候选资源列表，完成两项任务：
+
+一、精选（对每个候选）：
+1. 筛选：剔除与目标影片无关、或疑似垃圾内容（预告片/花絮/广告/凑数压缩包/挂羊头卖狗肉）的候选（keep=false，reason 必填）；
 2. 评分：对保留候选给出 0~100 的推荐分，综合考量片名匹配度、清晰度规格、资源完整性（集数/体积）、发布时间与存活状态；
 3. 去重：内容实质相同的候选归为一组，每组仅推荐一个最佳候选（其余标记 dup_of 指向组内最佳的 index）；
 4. 解析：从候选标题中提取影片名（中文优先）、年份、季数。
 
+二、解析文件名（仅当候选附带 files 数组时）：对每个文件路径（含所在目录）解析影片信息，并生成规范文件名：
+- canonical 格式：Title.SxxEyy.Year.Resolution.Source.Codec.Audio-Group.ext，点分，保留原扩展名，缺某项则省略，不要集标题；
+- Title：结合搜索关键词/分享标题/文件所在目录推断，中文优先（纯数字等无标题文件也须尽力给出），确实无法判断时可用原文或拼音；
+- season/episode：从文件名或所在目录推断（如目录"第三季"+文件名"06" → season=3, episode=6）。
+
 只输出 JSON，不要输出任何其他内容，格式：
-{"items":[{"index":0,"keep":true,"score":85,"dup_of":null,"reason":"一句话中文理由","title":"影片名","year":2023,"season":1}]}
+{"items":[{"index":0,"keep":true,"score":85,"dup_of":null,"reason":"一句话中文理由","title":"影片名","year":2023,"season":1,"files":[{"i":0,"season":1,"episode":1,"canonical":"Title.S01E01.2023.2160p.WEB-DL.H.265.AAC.mp4"}]}]}
 字段说明：
 - index：输入 candidates 数组下标，必须逐一覆盖所有候选；
 - keep：false 表示剔除（此时 reason 必填说明原因）；
 - score：0~100 整数，被剔除的候选可为 null；
 - dup_of：与哪个候选重复（填对方的 index），自身是组内最佳或无重复时为 null；
-- title/year/season：从标题解析，无法判断时为 null。"""
+- title/year/season：从候选标题解析，无法判断时为 null；
+- files：仅对输入带 files 的候选输出；i 为该候选 files 数组下标，必须逐一覆盖其全部文件；
+  season/episode 为整数或 null；canonical 为规范文件名字符串（确实无法给出时为 null）。"""
 
 
 async def review_candidates(cands: list[dict], *, keyword: str = "",
                             title: str = "", season: int | None = None) -> list[dict]:
-    """AI 精选：返回与输入对应的规整结果列表（见 _validate_review）。
+    """AI 精选+解析：返回与输入对应的规整结果列表（见 _validate_review）。
 
-    输入仅候选元数据；结果按 skill 版本 + 输入内容哈希缓存 1 天。"""
+    输入为候选元数据，有效候选可附带 files（分享内完整文件路径）用于
+    逐文件解析；结果按 skill 版本 + 输入内容哈希缓存 1 天。"""
     payload = {"keyword": keyword, "title": title, "season": season,
                "candidates": cands}
     cache_key = ("llm:review:%d:%s" % (
@@ -144,21 +162,26 @@ async def review_candidates(cands: list[dict], *, keyword: str = "",
         ctx.append(f"目标季数：第 {season} 季")
     if keyword:
         ctx.append(f"搜索关键词：{keyword}")
-    user = ("目标影片信息：{}\n\n候选列表（JSON 数组，index 即数组下标）：\n{}"
+    user = ("目标影片信息：{}\n\n候选列表（JSON 数组，index 即数组下标，"
+            "附 files 的候选需逐文件解析并给出 canonical）：\n{}"
             "\n\n请按 skill 要求输出 JSON。").format(
         "；".join(ctx) or "（无，仅凭候选标题判断）",
         json.dumps(cands, ensure_ascii=False))
     raw = await chat([{"role": "system", "content": REVIEW_SKILL},
                       {"role": "user", "content": user}])
-    items = _validate_review(_extract_json(raw), len(cands))
+    files_counts = [len(c.get("files") or []) for c in cands]
+    items = _validate_review(_extract_json(raw), len(cands), files_counts)
     if not items:
         raise LLMError("模型输出的结果列表为空或全部无效")
     db.set_cache(config.DB_PATH, cache_key, items, _CACHE_TTL)
     return items
 
 
-def _validate_review(data, n: int) -> list[dict]:
-    """校验模型输出：下标越界/类型不符的条目丢弃，字段截断规整。"""
+def _validate_review(data, n: int,
+                     files_counts: list[int] | None = None) -> list[dict]:
+    """校验模型输出：下标越界/类型不符的条目丢弃，字段截断规整。
+
+    files_counts[i] 为第 i 个候选输入的文件数（用于 files[].i 越界校验）。"""
     if not isinstance(data, dict) or not isinstance(data.get("items"), list):
         return []
     out: list[dict] = []
@@ -169,6 +192,22 @@ def _validate_review(data, n: int) -> list[dict]:
         if idx is None or not (0 <= idx < n):
             continue
         dup = _int_or_none(it.get("dup_of"))
+        files: list[dict] = []
+        fcount = files_counts[idx] if files_counts and idx < len(files_counts) else 0
+        if fcount and isinstance(it.get("files"), list):
+            for pf in it["files"]:
+                if not isinstance(pf, dict):
+                    continue
+                fi = _int_or_none(pf.get("i"))
+                if fi is None or not (0 <= fi < fcount):
+                    continue
+                files.append({
+                    "i": fi,
+                    "season": _int_or_none(pf.get("season")),
+                    "episode": _int_or_none(pf.get("episode")),
+                    "canonical": (str(pf["canonical"]).strip()[:300]
+                                  if pf.get("canonical") else None),
+                })
         out.append({
             "index": idx,
             "keep": it.get("keep") is not False,
@@ -179,6 +218,7 @@ def _validate_review(data, n: int) -> list[dict]:
             "title": str(it.get("title"))[:200] if it.get("title") else None,
             "year": _int_or_none(it.get("year")),
             "season": _int_or_none(it.get("season")),
+            "files": files,
         })
     return out
 

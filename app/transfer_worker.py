@@ -23,9 +23,10 @@ import os
 import re
 import time
 
-from . import config, db, settings
+from . import config, db, llm, settings
+from .name_parser import canonical_with_context, parser as name_parser
 from .tmdb import VideoMeta, fetch_meta
-from .matcher import MovieMatcher, JUNK_PATTERN, episode_of, parse
+from .matcher import MovieMatcher, JUNK_PATTERN, episode_of, parse, rough_title_match
 from .providers.base import CloudFile, ProviderAuthError, ProviderError, ShareFile
 from .providers.quark import QuarkDriveProvider
 
@@ -48,6 +49,12 @@ def parse_pwd_id(share_url: str) -> str:
     if not m:
         raise PermanentError(f"无法从分享链接解析 pwd_id: {share_url}")
     return m.group(1)
+
+
+def _folder_of(path: str) -> str:
+    """取文件所在目录名（"第三季/06.mp4" → "第三季"，顶层文件为空）。"""
+    parent = path.rstrip("/").rsplit("/", 1)[0] if "/" in path.rstrip("/") else ""
+    return parent.rsplit("/", 1)[-1] if parent else ""
 
 
 class TransferWorker:
@@ -180,21 +187,27 @@ class TransferWorker:
                     result = {"mode": "bulk", "share_entries": len(tops),
                               "names": [t.path for t in tops][:20]}
 
+            # 转存智能重命名计划（需求第 8 条）：提交前算好"原名 → 规范名"
+            rename_map, ai_used = await self._build_rename_map(task, chosen)
+            dir_fid = await self._target_dir(provider, task)
             save = await provider.save_share_files(
-                pwd_id, stoken, chosen,
-                to_pdir_fid=await self._target_dir(provider, task))
+                pwd_id, stoken, chosen, to_pdir_fid=dir_fid)
+            payload = dict(result, save_top_fids=save["top_fids"],
+                           save_dir_fid=dir_fid)
+            if rename_map:
+                payload["rename_map"] = rename_map
+                if ai_used:
+                    payload["ai_renamed"] = True
             # save 响应内嵌的 top_fids 是轮询响应缺失时的兜底（实测出现过 null）
             db.set_task_fields(self.db_path, task["id"],
                                quark_task_id=save["task_id"],
-                               result_json=json.dumps(
-                                   dict(result, save_top_fids=save["top_fids"]),
-                                   ensure_ascii=False))
+                               result_json=json.dumps(payload,
+                                                      ensure_ascii=False))
             if db.claim_task(self.db_path, task["id"], "SUBMITTING", "PROCESSING",
                              error="夸克转存处理中"):
                 task = dict(task, status="PROCESSING",
                             quark_task_id=save["task_id"],
-                            result_json=json.dumps(
-                                dict(result, save_top_fids=save["top_fids"])))
+                            result_json=json.dumps(payload))
                 await self._poll_and_finish(task)
         finally:
             await provider.close()
@@ -289,16 +302,91 @@ class TransferWorker:
     @staticmethod
     async def _find_duplicate(provider: QuarkDriveProvider,
                               share_file: ShareFile) -> str | None:
-        """防重：网盘已存在同名且大小一致的文件时返回其 fid（搜索不返回目录）。"""
+        """防重（需求第 9 条）：转存文件会智能重命名为规范名，同名判断失效。
+        判据：1) 同名且大小一致（未改名/手动整理场景）；
+             2) 精确文件大小匹配 + 粗略影片名匹配（重命名后的规范名场景）。"""
         try:
             found = await provider.search_files(share_file.name)
         except ProviderError:
-            return None  # 搜索失败不阻塞转存
+            found = []  # 搜索失败不阻塞转存
         for f in found:
             if f.name == share_file.name and \
                (not share_file.size or not f.size or f.size == share_file.size):
                 return f.fid
+        info = name_parser.parse(share_file.name)
+        title = info.title or info.title_en
+        if not title or not share_file.size:
+            return None  # 无片名/无大小无从粗略匹配
+        try:
+            found = await provider.search_files(title[:50])
+        except ProviderError:
+            return None
+        for f in found:
+            if f.size and f.size == share_file.size \
+                    and rough_title_match(share_file.name, f.name):
+                return f.fid
         return None
+
+    async def _build_rename_map(
+            self, task: dict,
+            chosen: list[ShareFile]) -> tuple[dict[str, str], bool]:
+        """转存智能重命名计划（需求第 8 条）：返回 ({分享路径: 规范名}, 是否用了 AI)。
+
+        规范名：AI 规范名优先（对规则解析不出标题的文件名走 llm.parse_names
+        兜底，带 1 天缓存），否则 name_parser 规范名。仅视频文件参与。"""
+        videos = [e for e in chosen
+                  if not e.is_dir and e.name
+                  and os.path.splitext(e.name)[1].lower() in VIDEO_EXTS
+                  and not JUNK_PATTERN.search(e.name)]
+        if not videos:
+            return {}, False
+        ai_titles = await self._ai_titles(task, videos)
+        out: dict[str, str] = {}
+        for e in videos:
+            kw = dict(search_title=(task.get("title") or "")[:100],
+                      share_title=(task.get("candidate_title") or "")[:200],
+                      folder=_folder_of(e.path))
+            info = name_parser.parse(e.name)
+            if not (info.title or info.title_en):
+                ai = ai_titles.get(e.name)
+                if ai:  # AI 标题兜底：直接按 AI 标题生成规范名
+                    cname = name_parser.canonical(info, title=ai)
+                else:
+                    cname = canonical_with_context(e.name, **kw)
+            else:
+                cname = canonical_with_context(e.name, **kw)
+            if cname and cname != e.name:
+                out[e.path or e.name] = cname
+        return out, bool(ai_titles)
+
+    @staticmethod
+    async def _ai_titles(task: dict, videos: list[ShareFile]) -> dict[str, str]:
+        """AI 兜底解析无标题文件名（结果有缓存；未配置/失败返回空）。"""
+        if not llm.configured():
+            return {}
+        names = []
+        for e in videos:
+            if name_parser.parse(e.name).title:
+                continue  # 规则可解出标题，无需 AI
+            names.append({"name": e.name[:300],
+                          "search_title": (task.get("title") or "")[:100],
+                          "share_title": (task.get("candidate_title") or "")[:200],
+                          "folder": _folder_of(e.path)})
+        if not names:
+            return {}
+        try:
+            items = await llm.parse_names(names[:50])
+        except llm.LLMError as e:
+            log.info("任务 %s AI 标题兜底不可用: %s", task.get("id"), e)
+            return {}
+        out: dict[str, str] = {}
+        for it in items:
+            i = it.get("index")
+            if i is None or not (0 <= i < len(names)):
+                continue
+            if it.get("confident") and it.get("title"):
+                out[names[i]["name"]] = str(it["title"])[:100]
+        return out
 
     async def _target_dir(self, provider: QuarkDriveProvider, task: dict) -> str:
         """解析转存目标目录 fid：任务归属用户自定义的保存目录优先，
@@ -364,6 +452,12 @@ class TransferWorker:
                                         "size": f.size}
                                        for f in found[:50]]
 
+        # 转存智能重命名（需求第 8 条）：落盘文件改名为规范名并写记录 txt；
+        # 全程尽力而为，失败只记日志，不影响任务成功
+        if result.get("rename_map"):
+            await self._apply_renames(provider, task, result,
+                                      result.get("save_dir_fid") or "0")
+
         db.set_task_fields(self.db_path, task["id"],
                            target_fid=fid,
                            result_json=json.dumps(dict(
@@ -373,6 +467,89 @@ class TransferWorker:
                               error="转存完成")
         log.info("任务 %s COMPLETED fid=%s mode=%s located=%s",
                  task["id"], fid, mode, located)
+
+    async def _apply_renames(self, provider: QuarkDriveProvider,
+                             task: dict, result: dict, dir_fid: str) -> None:
+        """落盘文件智能重命名（需求第 8 条）：按提交时算好的 rename_map
+        把网盘文件改名为规范名，并更新任务 result 内的文件名（任务明细与
+        Stream 定位用），同时在目标目录写入「已有{APP_NAME}智能重命名.txt」。"""
+        rename_map = result.get("rename_map") or {}
+        by_base = {os.path.basename(k): v for k, v in rename_map.items()}
+        try:
+            drive_files = await provider.list_dir_files(dir_fid, max_depth=3)
+        except ProviderError as e:
+            log.warning("任务 %s 重命名前列目录失败: %s", task["id"], e)
+            return
+        renamed: list[list[str]] = []
+        for f in drive_files:
+            new = by_base.get(f.name)
+            if not new or new == f.name:
+                continue
+            try:
+                await provider.rename_file(f.fid, new)
+            except ProviderError as e:
+                log.warning("任务 %s 重命名失败 %s → %s: %s",
+                            task["id"], f.name, new, e)
+                continue
+            renamed.append([f.name, new])
+        if not renamed:
+            return
+        ren = {a: b for a, b in renamed}
+        if result.get("name") and result["name"] in ren:
+            result.setdefault("origin_name", result["name"])  # 明细显示原名
+            result["name"] = ren[result["name"]]
+        for entry in result.get("files") or []:
+            if entry.get("name") in ren:
+                entry.setdefault("origin", entry["name"])  # 明细显示原名
+                entry["name"] = ren[entry["name"]]
+        result["renamed"] = renamed
+        log.info("任务 %s 智能重命名 %d 个文件", task["id"], len(renamed))
+        await self._write_rename_note(provider, dir_fid, renamed)
+
+    @staticmethod
+    async def _write_rename_note(provider: QuarkDriveProvider, dir_fid: str,
+                                 renamed: list[list[str]]) -> None:
+        """目标目录写入「已有{APP_NAME}智能重命名.txt」（重命名前后对照）。
+
+        已有记录文件时先让位（改名 .bak）→ 下载旧内容合并 → 上传新记录 →
+        清理备份；任一步失败尽力恢复旧记录，不影响任务状态。"""
+        app_name = settings.get("APP_NAME")
+        txt_name = f"已有{app_name}智能重命名.txt"
+        backup = txt_name + ".bak"
+        body = (f"本文件由 {app_name} 自动生成，"
+                "记录转存时的智能重命名对照（原名 → 规范名）。\n"
+                + "\n".join(f"{a} → {b}" for a, b in renamed) + "\n")
+        old = None
+        try:
+            for f in await provider.list_dir_files(dir_fid, max_depth=1):
+                if f.name == txt_name:
+                    old = f
+                    break
+            if old:
+                try:
+                    await provider.rename_file(old.fid, backup)
+                    try:
+                        prev = await provider.download_text(old.fid)
+                        body = prev.rstrip("\n") + "\n" + body
+                    except ProviderError as e:
+                        log.warning("读取旧重命名记录失败: %s", e)
+                except ProviderError as e:
+                    log.warning("旧重命名记录让位失败: %s", e)
+                    old = None
+            await provider.upload_text(dir_fid, txt_name, body)
+        except ProviderError as e:
+            log.warning("写入重命名记录失败: %s", e)
+            if old:  # 上传失败，恢复旧记录
+                try:
+                    await provider.rename_file(old.fid, txt_name)
+                except ProviderError:
+                    log.warning("恢复旧重命名记录失败")
+            return
+        if old:
+            try:
+                await provider.delete_files([old.fid])
+            except ProviderError as e:
+                log.warning("清理旧重命名记录失败: %s", e)
 
     @staticmethod
     async def _search_safe(provider: QuarkDriveProvider, kw: str) -> list[CloudFile]:

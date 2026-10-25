@@ -1,4 +1,5 @@
 """QuarkDriveProvider 测试：使用 httpx.MockTransport 模拟夸克接口。"""
+import json
 import os
 
 os.environ.setdefault("SECRET_KEY", "test-secret-key-0123456789abcdef0123456789")
@@ -9,7 +10,7 @@ from cryptography.fernet import Fernet  # noqa: E402
 from httpx import AsyncClient, MockTransport, Response, Request  # noqa: E402
 
 from app import db  # noqa: E402
-from app.providers.base import CloudFile, ProviderAuthError  # noqa: E402
+from app.providers.base import CloudFile, ProviderAuthError, ProviderError  # noqa: E402
 from app.providers.quark import QuarkDriveProvider  # noqa: E402
 
 SECRET = Fernet.generate_key().decode()
@@ -263,5 +264,89 @@ async def test_find_or_create_dir_conflict_rescan(tmp_db):
     p = make_provider("c=1", handler, tmp_db)
     try:
         assert await p.find_or_create_dir("GODDAMNCOOL") == "d-exist"
+    finally:
+        await p.close()
+
+
+# ---------- 智能重命名支撑（需求第 8 条） ----------
+
+async def test_rename_and_delete_files(tmp_db):
+    """rename_file 走 POST /file/rename；delete_files 走回收站式批量删除。"""
+    calls: list[tuple[str, dict]] = []
+
+    def handler(request: Request) -> Response:
+        calls.append((request.url.path, json.loads(request.content)))
+        return Response(200, json=api_json())
+
+    p = make_provider("c=1", handler, tmp_db)
+    try:
+        await p.rename_file("f1", "余罪.S01E01.mp4")
+        await p.delete_files(["f1", "f2"])
+        await p.delete_files([])          # 空列表不请求
+    finally:
+        await p.close()
+    assert len(calls) == 2
+    assert calls[0][0].endswith("/file/rename")
+    assert calls[0][1] == {"fid": "f1", "file_name": "余罪.S01E01.mp4"}
+    assert calls[1][0].endswith("/file/delete")
+    assert calls[1][1]["filelist"] == ["f1", "f2"]
+    assert calls[1][1]["action_type"] == 2
+
+
+async def test_download_text_follows_redirect(tmp_db):
+    """download_text：/file/download 取直链 → 手动跟随 302 → 返回文本。"""
+
+    def handler(request: Request) -> Response:
+        if request.url.path.endswith("/file/download"):
+            return Response(200, json=api_json(
+                data=[{"download_url": "https://dl.test/step1"}]))
+        if request.url.path == "/step1":
+            return Response(302, headers={"location": "https://dl.test/step2"})
+        assert request.url.path == "/step2"
+        return Response(200, content="01.mp4 → 余罪.S01E01.mp4\n".encode())
+
+    p = make_provider("c=1", handler, tmp_db)
+    try:
+        assert await p.download_text("f1") == "01.mp4 → 余罪.S01E01.mp4\n"
+    finally:
+        await p.close()
+
+
+async def test_download_text_no_url_raises(tmp_db):
+    def handler(request: Request) -> Response:
+        return Response(200, json=api_json(data=[]))
+
+    p = make_provider("c=1", handler, tmp_db)
+    try:
+        with pytest.raises(ProviderError):
+            await p.download_text("f1")
+    finally:
+        await p.close()
+
+
+async def test_upload_text_instant_finish(tmp_db):
+    """秒传命中（pre 返回 finish=True）直接返回，不走 OSS。"""
+
+    def handler(request: Request) -> Response:
+        assert request.url.path.endswith("/file/upload/pre")
+        body = json.loads(request.content)
+        assert body["file_name"].endswith("智能重命名.txt")
+        return Response(200, json=api_json(data={"finish": True}))
+
+    p = make_provider("c=1", handler, tmp_db)
+    try:
+        await p.upload_text("dir1", "已有GODDAMNCOOL智能重命名.txt", "a → b\n")
+    finally:
+        await p.close()
+
+
+async def test_upload_text_pre_error_raises(tmp_db):
+    def handler(request: Request) -> Response:
+        return Response(200, json=api_json(code=1, message="boom"))
+
+    p = make_provider("c=1", handler, tmp_db)
+    try:
+        with pytest.raises(ProviderError):
+            await p.upload_text("dir1", "x.txt", "内容")
     finally:
         await p.close()
