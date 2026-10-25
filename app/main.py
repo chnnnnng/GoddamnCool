@@ -8,7 +8,7 @@ from fastapi.staticfiles import StaticFiles
 from . import config, db, settings
 from .admin_routes import router as admin_router
 from .auth_routes import router as auth_router
-from .candidate_routes import router as candidate_router
+from .search_routes import router as candidate_router
 from .stremio_routes import router as stremio_router
 from .transfer_worker import TransferWorker
 from .user_routes import router as user_router

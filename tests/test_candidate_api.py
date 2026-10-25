@@ -11,10 +11,10 @@ import pytest  # noqa: E402
 from cryptography.fernet import Fernet  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
-import app.candidate_routes as cr  # noqa: E402
+import app.search_routes as cr  # noqa: E402
 import app.config as config  # noqa: E402
 from app import db  # noqa: E402
-from app.candidate_service import CandidateService  # noqa: E402
+from app.search.search_service import SearchService  # noqa: E402
 from app.tmdb import VideoMeta  # noqa: E402
 from app.main import app  # noqa: E402
 from app.search import SearchCandidate, SearchError  # noqa: E402
@@ -50,11 +50,11 @@ _META_SENTINEL = object()
 
 
 def patch_search(monkeypatch, candidates, errors="", meta=_META_SENTINEL):
-    """替换 CandidateService.search，隔离外部来源与 TMDB。"""
+    """替换 SearchService.search，隔离外部来源与 TMDB。"""
     if meta is _META_SENTINEL:
         meta = VideoMeta({"imdb_id": "tt5636724", "name": "余罪",
                           "type": "series", "releaseInfo": "2016"})
-    svc = CandidateService()
+    svc = SearchService()
     calls = []
 
     async def fake_search(vtype, video_id, keyword="", disks=None, cookie=""):
@@ -64,7 +64,7 @@ def patch_search(monkeypatch, candidates, errors="", meta=_META_SENTINEL):
             keyword or (meta.title if meta and video_id else "")
 
     monkeypatch.setattr(svc, "search", fake_search)
-    monkeypatch.setattr(cr, "candidate_service", svc)
+    monkeypatch.setattr(cr, "search_service", svc)
     svc.calls = calls
     return svc
 
@@ -166,7 +166,7 @@ def test_tmdb_cache_roundtrip(tmp_db):
 
 def test_score_prefers_matching_language_ref(monkeypatch):
     """跨语言：中文关键词下中文候选得分应高于仅凭英文原标题的得分。"""
-    from app.candidate_service import score_candidate
+    from app.search.search_service import score_candidate
     meta = VideoMeta({"imdb_id": "tt5925192", "name": "Yu Zui",
                       "type": "series", "releaseInfo": "2016"})
     c = SearchCandidate(title="【夸克网盘】余罪 第1-2季 (2016)", share_url=GOOD_URL)
@@ -249,7 +249,7 @@ def test_verify_rejects_empty_and_invalid(tmp_db, monkeypatch):
 
 
 def test_verify_maps_states(tmp_db, monkeypatch):
-    svc = CandidateService()
+    svc = SearchService()
     calls = []
 
     async def fake_verify(items):
@@ -259,7 +259,7 @@ def test_verify_maps_states(tmp_db, monkeypatch):
                  "summary": "链接有效"} for i in items]
 
     monkeypatch.setattr(svc, "verify_links", fake_verify)
-    monkeypatch.setattr(cr, "candidate_service", svc)
+    monkeypatch.setattr(cr, "search_service", svc)
     r = client.post("/api/candidates/verify", headers=AUTH, json={"items": [
         {"share_url": GOOD_URL, "passcode": "ax72"},
         {"share_url": "https://pan.quark.cn/s/2a5efb0c3dc7", "passcode": ""},
@@ -275,13 +275,13 @@ def test_verify_maps_states(tmp_db, monkeypatch):
 
 async def test_verify_links_degrades_to_uncertain(monkeypatch):
     """PanSou 检测整体失败时降级为 uncertain，不向上抛异常。"""
-    from app import candidate_service as cs_mod
+    from app.search import search_service as cs_mod
 
     async def fake_check(self, items):
         raise SearchError("检测服务不可用")
 
     monkeypatch.setattr(cs_mod.PanSouProvider, "check_links", fake_check)
-    svc = cs_mod.CandidateService()
+    svc = cs_mod.SearchService()
     res = await svc.verify_links([
         {"share_url": GOOD_URL, "passcode": ""},
         {"share_url": "https://pan.quark.cn/s/2a5efb0c3dc7", "passcode": "ax72"},
@@ -292,7 +292,7 @@ async def test_verify_links_degrades_to_uncertain(monkeypatch):
 
 async def test_verify_links_order_and_passcode(monkeypatch):
     """结果按输入顺序返回；有码条目带 password 字段。"""
-    from app import candidate_service as cs_mod
+    from app.search import search_service as cs_mod
     seen = []
 
     async def fake_check(self, items):
@@ -301,7 +301,7 @@ async def test_verify_links_order_and_passcode(monkeypatch):
                  "summary": "链接有效"} for i in items]
 
     monkeypatch.setattr(cs_mod.PanSouProvider, "check_links", fake_check)
-    svc = cs_mod.CandidateService()
+    svc = cs_mod.SearchService()
     res = await svc.verify_links([
         {"share_url": "https://pan.quark.cn/s/2a5efb0c3dc7", "passcode": "ax72"},
         {"share_url": GOOD_URL, "passcode": ""},
@@ -320,7 +320,7 @@ URL_B = "https://pan.quark.cn/s/2a5efb0c3dc7"
 
 def patch_real_search(monkeypatch, tmp_db, name_zh, name_en=None):
     """mock fetch_meta（TMDB 双语名）与 PanSouProvider（search 记录关键词、check 可定制）。"""
-    from app import candidate_service as cs_mod
+    from app.search import search_service as cs_mod
     meta = VideoMeta({"imdb_id": "tt5925192", "name": name_zh,
                       "name_zh": name_zh, "name_en": name_en or name_zh,
                       "type": "series", "releaseInfo": "2016"})
@@ -356,7 +356,7 @@ async def test_search_dual_keywords_merge_and_dead_last(tmp_db, monkeypatch):
     """TMDB 双语名（中文名 ≠ 外语名）→ 两个名字各搜一次；
     跨关键词去重；失效候选沉底且带存活状态。"""
     calls = patch_real_search(monkeypatch, tmp_db, "余罪", "Yu Zui")
-    svc = CandidateService(db_path=tmp_db)
+    svc = SearchService(db_path=tmp_db)
     m, cands, errs, kw = await svc.search("series", "tt5925192")
     assert calls == ["余罪", "Yu Zui"]  # 中文名 + 外语名各一次
     assert kw == "余罪"
@@ -371,7 +371,7 @@ async def test_search_dual_keywords_merge_and_dead_last(tmp_db, monkeypatch):
 async def test_search_single_keyword_when_names_match(tmp_db, monkeypatch):
     """TMDB 双语名相同（无译名影片）→ 只搜一次，不做无谓的第二查。"""
     calls = patch_real_search(monkeypatch, tmp_db, "FRIENDS")
-    svc = CandidateService(db_path=tmp_db)
+    svc = SearchService(db_path=tmp_db)
     await svc.search("series", "tt5925192")
     assert calls == ["FRIENDS"]
 
@@ -380,7 +380,7 @@ async def test_search_manual_keyword_merges_with_tmdb_names(tmp_db, monkeypatch)
     """手动关键词与 TMDB 中文名归一化相同 → 去重合并，只补搜外语名；
     手动关键词不做缓存。"""
     calls = patch_real_search(monkeypatch, tmp_db, "余罪", "Yu Zui")
-    svc = CandidateService(db_path=tmp_db)
+    svc = SearchService(db_path=tmp_db)
     m, cands, errs, kw = await svc.search("series", "tt5925192", keyword="余罪")
     assert calls == ["余罪", "Yu Zui"]
     assert kw == "余罪"
@@ -388,14 +388,14 @@ async def test_search_manual_keyword_merges_with_tmdb_names(tmp_db, monkeypatch)
 
 async def test_search_alive_check_failure_degrades(tmp_db, monkeypatch):
     """存活检测整体失败：候选照常返回，全部标记 uncertain（不抛异常）。"""
-    from app import candidate_service as cs_mod
+    from app.search import search_service as cs_mod
     patch_real_search(monkeypatch, tmp_db, "余罪", "Yu Zui")
 
     async def fake_check(self, items):
         raise SearchError("检测服务不可用")
 
     monkeypatch.setattr(cs_mod.PanSouProvider, "check_links", fake_check)
-    svc = CandidateService(db_path=tmp_db)
+    svc = SearchService(db_path=tmp_db)
     m, cands, errs, kw = await svc.search("series", "tt5925192")
     assert len(cands) == 3
     assert all(c.alive_state == "uncertain" for c in cands)
@@ -497,7 +497,7 @@ def test_whole_task_covers_all_episodes(tmp_path):
 # ---------- 分享内容解析（阶段 5：查看内容详情） ----------
 
 def patch_inspect(monkeypatch, result=None, error=None):
-    svc = CandidateService()
+    svc = SearchService()
     calls = []
 
     async def fake_inspect(share_url, passcode="", cookie=""):
@@ -509,7 +509,7 @@ def patch_inspect(monkeypatch, result=None, error=None):
                           "seasons": [], "files": []}
 
     monkeypatch.setattr(svc, "inspect_share", fake_inspect)
-    monkeypatch.setattr(cr, "candidate_service", svc)
+    monkeypatch.setattr(cr, "search_service", svc)
     svc.inspect_calls = calls
     return svc
 
@@ -580,7 +580,7 @@ def test_inspect_files_canonical_flag(tmp_db, monkeypatch):
 
 async def test_inspect_share_parses_files_and_seasons(tmp_db, monkeypatch):
     """inspect_share 实际逻辑：过滤非视频/垃圾文件，解析季集/规格，分季聚合。"""
-    from app import candidate_service as cs_mod
+    from app.search import search_service as cs_mod
     from app.providers.base import ShareFile
 
     class FakeProvider:
@@ -612,7 +612,7 @@ async def test_inspect_share_parses_files_and_seasons(tmp_db, monkeypatch):
             pass
 
     monkeypatch.setattr(cs_mod, "QuarkDriveProvider", FakeProvider)
-    svc = cs_mod.CandidateService(db_path=tmp_db)
+    svc = cs_mod.SearchService(db_path=tmp_db)
     data = await svc.inspect_share(GOOD_URL, "ax72", cookie="c=1")
     assert data["video_count"] == 3
     assert data["other_count"] == 2          # sample.mp4（垃圾）+ 说明.txt（非视频）
@@ -630,9 +630,9 @@ async def test_inspect_share_parses_files_and_seasons(tmp_db, monkeypatch):
 
 async def test_inspect_share_no_cookie_raises(tmp_db, monkeypatch):
     """未绑定网盘账号时 inspect 报错（由路由转 400）。"""
-    from app import candidate_service as cs_mod
+    from app.search import search_service as cs_mod
 
-    svc = cs_mod.CandidateService(db_path=tmp_db)
+    svc = cs_mod.SearchService(db_path=tmp_db)
     try:
         await svc.inspect_share(GOOD_URL)
         assert False, "应当抛出 ProviderError"
@@ -694,7 +694,7 @@ def test_static_js_contains_no_python_artifacts():
 async def test_search_result_cached_one_day(tmp_db, monkeypatch):
     """同参数第二次搜索命中 kv_cache（chain 层），不再请求外部来源；候选内容一致。"""
     calls = patch_real_search(monkeypatch, tmp_db, "余罪", "Yu Zui")
-    from app.search_chains import BaseSearchChain
+    from app.search.search_chains import BaseSearchChain
     # 清空该测试可能遗留的缓存
     db.clear_cache(tmp_db, prefix="search:series")
     chain = BaseSearchChain()
@@ -711,7 +711,7 @@ async def test_search_cache_disabled_when_ttl_zero(tmp_db, monkeypatch):
     """SEARCH_CACHE_TTL=0：关闭缓存，每次都实搜。"""
     calls = patch_real_search(monkeypatch, tmp_db, "余罪", "Yu Zui")
     monkeypatch.setattr(config, "SEARCH_CACHE_TTL", 0)
-    from app.search_chains import BaseSearchChain
+    from app.search.search_chains import BaseSearchChain
     db.clear_cache(tmp_db, prefix="search:series")
     chain = BaseSearchChain()
     await chain.search("余罪", vtype="series", id="tt5925192")
@@ -722,7 +722,7 @@ async def test_search_cache_disabled_when_ttl_zero(tmp_db, monkeypatch):
 async def test_search_cache_distinguishes_disks(tmp_db, monkeypatch):
     """不同 disks 参数 → 不同缓存键（默认夸克 ≠ 全部网盘）。"""
     calls = patch_real_search(monkeypatch, tmp_db, "FRIENDS")
-    from app.search_chains import BaseSearchChain
+    from app.search.search_chains import BaseSearchChain
     db.clear_cache(tmp_db, prefix="search:series")
     chain = BaseSearchChain()
     await chain.search("老友记", vtype="series", id="tt2728372", disks=["quark"])
@@ -738,7 +738,7 @@ async def test_search_marks_no_video_content_bad(tmp_db, monkeypatch):
 
     candidate_service.search 现在只做 PanSou + verify_links 初步分档；
     inspect_share 延后到 BaseSearchChain.search 里按需调（TOP N alive + cookie）。"""
-    from app import candidate_service as cs_mod
+    from app.search import search_service as cs_mod
     from app.providers.base import ShareFile
 
     patch_real_search(monkeypatch, tmp_db, "FRIENDS")
@@ -758,7 +758,7 @@ async def test_search_marks_no_video_content_bad(tmp_db, monkeypatch):
             pass
 
     monkeypatch.setattr(cs_mod, "QuarkDriveProvider", FakeProvider)
-    svc = cs_mod.CandidateService(db_path=tmp_db)
+    svc = cs_mod.SearchService(db_path=tmp_db)
     # 直接调 svc.search —— 现在只做 PanSou + verify_links，不调 inspect_share
     m, cands, errs, kw = await svc.search("series", "tt5925192", cookie="c=1")
     target = next(c for c in cands if c.share_url == URL_A)
@@ -766,7 +766,7 @@ async def test_search_marks_no_video_content_bad(tmp_db, monkeypatch):
     assert target.detail is None                # inspect 延后，detail 还没填
 
     # 通过 BaseSearchChain.search 才会 inspect + 二次筛选
-    from app.search_chains import BaseSearchChain
+    from app.search.search_chains import BaseSearchChain
     chain = BaseSearchChain()
     # chain.search 内部用 candidate_service（candidate_routes 里的单例），
     # 但我们的 FakeProvider 已经 patch 了全局 QuarkDriveProvider
@@ -781,7 +781,7 @@ async def test_search_marks_no_video_content_bad(tmp_db, monkeypatch):
 
 async def test_inspect_share_cached_one_day(tmp_db, monkeypatch):
     """inspect 结果缓存：同链接第二次解析不再请求网盘。"""
-    from app import candidate_service as cs_mod
+    from app.search import search_service as cs_mod
     from app.providers.base import ShareFile
 
     calls = {"n": 0}
@@ -802,7 +802,7 @@ async def test_inspect_share_cached_one_day(tmp_db, monkeypatch):
             pass
 
     monkeypatch.setattr(cs_mod, "QuarkDriveProvider", FakeProvider)
-    svc = cs_mod.CandidateService(db_path=tmp_db)
+    svc = cs_mod.SearchService(db_path=tmp_db)
     d1 = await svc.inspect_share(GOOD_URL, cookie="c=1")
     d2 = await svc.inspect_share(GOOD_URL, cookie="c=1")
     assert calls["n"] == 1                       # 第二次走缓存
@@ -938,7 +938,7 @@ def test_spec_badges_uses_name_parser():
 async def test_inspect_share_name_parser_seasons_and_spec(tmp_db, monkeypatch):
     """inspect 季集/规格由 MessyNameParser 解析：狂飙01→E01、第11集→E11、
     规格含附加标签（旧 matcher 覆盖不了的乱七八糟命名）。"""
-    from app import candidate_service as cs_mod
+    from app.search import search_service as cs_mod
     from app.providers.base import ShareFile
 
     class FakeProvider:
@@ -964,7 +964,7 @@ async def test_inspect_share_name_parser_seasons_and_spec(tmp_db, monkeypatch):
             pass
 
     monkeypatch.setattr(cs_mod, "QuarkDriveProvider", FakeProvider)
-    svc = cs_mod.CandidateService(db_path=tmp_db)
+    svc = cs_mod.SearchService(db_path=tmp_db)
     data = await svc.inspect_share(GOOD_URL, cookie="c=1")
     files = data["files"]
     # 排序（季,集,名）：E01 < E11 < 无集数

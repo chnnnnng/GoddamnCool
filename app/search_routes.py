@@ -30,16 +30,16 @@ from .auth import require_user
 from .matcher import _title_keys_similarity
 from .name_parser import canonical_with_context, spec_dict, normalize_resolution
 from .name_parser import parser as name_parser
-from .search_chains import BaseSearchChain, AISearchChain  # 需求第 3 条：普通链/AI 链
+from .search.search_chains import BaseSearchChain, AISearchChain  # 需求第 3 条：普通链/AI 链
 from .tmdb import fetch_meta
 from .search import SHARE_URL_RE
 from .providers.quark import QuarkDriveProvider
-from .candidate_service import CandidateService
+from .search.search_service import SearchService
 from .stream_service import parse_video_id
 from .web_routes import page
 
 router = APIRouter()
-candidate_service = CandidateService()
+search_service = SearchService()
 
 _STATUS_TEXT = {
     "PENDING": "等待执行",
@@ -184,7 +184,8 @@ async def candidates_search(request: Request, vtype: str = "movie", id: str = ""
     db.incr_search_count(config.DB_PATH, user["id"])
     user_cookie = db.load_user_cookie(config.DB_PATH, user["id"]) or ""
     # 需求第 3 条：普通链 vs AI 链——后端一体化，前端无感
-    chain = AISearchChain() if llm.configured() else BaseSearchChain()
+    chain = (AISearchChain(service=search_service) if llm.configured()
+             else BaseSearchChain(service=search_service))
     season = None
     if id and vtype == "series":
         # 锚定模式：从 URL 参数或 TMDB 推断季数
@@ -275,7 +276,7 @@ async def candidates_confirm(request: Request):
     if video_id:
         # Stremio 锚定模式：季集来自影片 ID，标题以 TMDB 为准（key 管理员统一配置）
         imdb_id, season, episode = parse_video_id(video_id)
-        meta = await fetch_meta(imdb_id, vtype, candidate_service.db_path)
+        meta = await fetch_meta(imdb_id, vtype, search_service.db_path)
         if meta is None or not meta.title:
             return JSONResponse({"detail": "影片元数据获取失败，请稍后重试"}, status_code=400)
         title = meta.title
@@ -343,7 +344,7 @@ async def candidates_inspect(request: Request):
         return JSONResponse({"detail": "请先在控制面板绑定网盘 Cookie"},
                             status_code=400)
     try:
-        data = await candidate_service.inspect_share(
+        data = await search_service.inspect_share(
             url, (body.get("passcode") or "")[:32], cookie=cookie)
     except Exception as e:
         return JSONResponse({"detail": f"分享解析失败: {e}"}, status_code=400)
@@ -398,7 +399,7 @@ async def candidates_verify(request: Request):
         items.append({"share_url": url, "passcode": (it.get("passcode") or "")[:32]})
     if not items:
         return JSONResponse({"detail": "无有效的夸克分享链接"}, status_code=400)
-    return {"results": await candidate_service.verify_links(items)}
+    return {"results": await search_service.verify_links(items)}
 
 
 @router.get("/api/llm-status")

@@ -27,8 +27,8 @@ import logging
 import os
 import re
 
-from . import config, db, llm, settings
-from .name_parser import canonical_with_context, parser as name_parser
+from .. import config, db, llm, settings
+from ..name_parser import canonical_with_context, parser as name_parser
 
 log = logging.getLogger(__name__)
 
@@ -75,9 +75,13 @@ def _folder_of(path: str) -> str:
 class BaseSearchChain:
     """普通搜索链。"""
 
-    def __init__(self):
-        from .candidate_routes import candidate_service
-        self.service = candidate_service
+    def __init__(self, service=None):
+        # 允许注入 service（测试 / search_routes 共享单例），否则新建
+        if service is not None:
+            self.service = service
+        else:
+            from .search_service import SearchService
+            self.service = SearchService()
 
     # ==================== 普通链主流程 ====================
 
@@ -117,7 +121,7 @@ class BaseSearchChain:
 
     @staticmethod
     def _serialized(result: dict) -> dict:
-        from .candidate_service import CandidateService as _CS
+        from .search_service import SearchService as _CS
         meta = result["meta"]
         return {
             "meta": ({"imdb_id": getattr(meta, "id", None),
@@ -134,8 +138,8 @@ class BaseSearchChain:
 
     @staticmethod
     def _restore(data: dict) -> dict:
-        from .candidate_service import CandidateService as _CS, SearchCandidate
-        from .tmdb import VideoMeta
+        from .search_service import SearchService as _CS, SearchCandidate
+        from ..tmdb import VideoMeta
         meta_d = data.get("meta")
         meta = VideoMeta(meta_d) if meta_d else None
         cands = [SearchCandidate(**c) for c in data.get("candidates", [])]
@@ -397,7 +401,7 @@ class AISearchChain(BaseSearchChain):
         # resolution 走归一化（4K→2160p, 8K→4320p 等）避免 AI 和 parser 产出不一致
         ai_res_raw = pf.get("resolution")
         if ai_res_raw:
-            from .name_parser import normalize_resolution
+            from ..name_parser import normalize_resolution
             info.resolution = normalize_resolution(ai_res_raw) or info.resolution
         info.source = pf.get("source") or info.source
         ai_codec = pf.get("codec") or ""

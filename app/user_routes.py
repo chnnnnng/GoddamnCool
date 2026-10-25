@@ -13,7 +13,7 @@ from . import config, db
 from .auth import hash_password, new_stream_token, require_user, verify_password
 from .providers.base import ProviderError
 from .providers.quark import QuarkDriveProvider
-from .candidate_routes import _STATUS_TEXT
+from .search_routes import _STATUS_TEXT
 
 router = APIRouter()
 

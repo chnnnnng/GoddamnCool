@@ -9,10 +9,10 @@ import pytest  # noqa: E402
 from cryptography.fernet import Fernet  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
-import app.candidate_routes as cr  # noqa: E402
+import app.search_routes as cr  # noqa: E402
 import app.config as config  # noqa: E402
 from app import db, settings  # noqa: E402
-from app.candidate_service import CandidateService  # noqa: E402
+from app.search.search_service import SearchService  # noqa: E402
 from app.main import app  # noqa: E402
 
 client = TestClient(app)
@@ -31,13 +31,13 @@ def tmp_db(tmp_path, monkeypatch):
 @pytest.fixture()
 def patched_search(monkeypatch):
     """隔离外部来源与 TMDB：search 恒返回一个候选。"""
-    svc = CandidateService()
+    svc = SearchService()
 
     async def fake_search(vtype, video_id, keyword="", disks=None, cookie=""):
         return None, [], "", keyword
 
     monkeypatch.setattr(svc, "search", fake_search)
-    monkeypatch.setattr(cr, "candidate_service", svc)
+    monkeypatch.setattr(cr, "search_service", svc)
     return svc
 
 

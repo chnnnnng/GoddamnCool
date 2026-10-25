@@ -14,15 +14,15 @@ import re
 from datetime import datetime
 from difflib import SequenceMatcher
 
-from . import config, db, settings
-from .name_parser import parser as name_parser, spec_dict
-from .tmdb import VideoMeta, fetch_meta, fetch_meta_by_keyword
-from .stream_service import parse_video_id
-from .matcher import JUNK_PATTERN, VIDEO_EXTS
-from .providers.base import ProviderError
-from .providers.quark import QuarkDriveProvider
-from .search import PanSouProvider, ResourceSearchProvider, SearchCandidate, SearchError
-from .transfer_worker import parse_pwd_id
+from .. import config, db, settings
+from ..name_parser import parser as name_parser, spec_dict
+from ..tmdb import VideoMeta, fetch_meta, fetch_meta_by_keyword
+from ..stream_service import parse_video_id
+from ..matcher import JUNK_PATTERN, VIDEO_EXTS
+from ..providers.base import ProviderError
+from ..providers.quark import QuarkDriveProvider
+from . import PanSouProvider, ResourceSearchProvider, SearchCandidate, SearchError
+from ..transfer_worker import parse_pwd_id
 
 log = logging.getLogger(__name__)
 
@@ -93,7 +93,7 @@ def _published_ts(cand: SearchCandidate) -> float:
         return 0.0
 
 
-class CandidateService:
+class SearchService:
     """聚合多个 ResourceSearchProvider 的检索编排。"""
 
     def __init__(self, db_path: str = config.DB_PATH):

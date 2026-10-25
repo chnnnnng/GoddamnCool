@@ -49,8 +49,8 @@ async def run(keyword: str, season: int | None, *, clear_cache: bool) -> None:
         print(f"[缓存] 清掉 {n} 条 llm 缓存")
     print(f"[LLM 配置] configured={llm.configured()}  REVIEW_SKILL_VERSION={llm.REVIEW_SKILL_VERSION}")
 
-    from app.candidate_service import CandidateService
-    svc = CandidateService()
+    from app.search.search_service import SearchService
+    svc = SearchService()
 
     # ============================================================
     # 阶段 1: PanSou 返回 + inspect_share 结果

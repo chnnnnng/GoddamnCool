@@ -219,14 +219,14 @@ def test_ai_parse_input_validation(llm_on, monkeypatch):
 
 def test_search_llm_enabled_flag(tmp_db, monkeypatch):
     """搜索响应带 llm_enabled（前端据此显示/隐藏 AI 精选入口）。"""
-    import app.candidate_routes as cr
+    import app.search_routes as cr
 
     async def fake_search(vtype, video_id, keyword="", disks=None, cookie=""):
         return None, [], "", keyword
 
-    svc = cr.CandidateService()
+    svc = cr.SearchService()
     monkeypatch.setattr(svc, "search", fake_search)
-    monkeypatch.setattr(cr, "candidate_service", svc)
+    monkeypatch.setattr(cr, "search_service", svc)
     monkeypatch.setattr(settings, "_cache", dict(settings._cache))
     r = client.get("/api/candidates/search?kw=x", headers=AUTH)
     assert r.status_code == 200 and r.json()["llm_enabled"] is False
