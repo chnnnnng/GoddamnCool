@@ -35,6 +35,19 @@ class VideoMeta:
         year_raw = meta.get("releaseInfo", "") or meta.get("year", "")
         self.year: int | None = _parse_year(year_raw)
         self.videos: list[dict] = meta.get("videos", []) or []
+        # 封面图路径片段（如 /abc.jpg），None 表示无 TMDB 封面
+        self.poster_path: str | None = meta.get("poster_path") or None
+        self.backdrop_path: str | None = meta.get("backdrop_path") or None
+
+    def poster_url(self, size: str = "w500") -> str | None:
+        if not self.poster_path:
+            return None
+        return f"https://image.tmdb.org/t/p/{size}{self.poster_path}"
+
+    def backdrop_url(self, size: str = "w1280") -> str | None:
+        if not self.backdrop_path:
+            return None
+        return f"https://image.tmdb.org/t/p/{size}{self.backdrop_path}"
 
     def episode_title(self, season: int, episode: int) -> str | None:
         for v in self.videos:
@@ -158,10 +171,14 @@ async def fetch_meta(imdb_id: str, vtype: str, db_path: str | None = None,
             name_en = (peer.get("title") or peer.get("name") or "").strip()
             date = entry.get("release_date") or entry.get("first_air_date") or ""
             videos = (await _tv_episodes(client, entry["id"])) if vtype != "movie" else []
+            # TMDB 封面路径片段（完整 URL 由 VideoMeta.backdrop_url/poster_url 拼）
+            poster_path = entry.get("poster_path") or None
+            backdrop_path = entry.get("backdrop_path") or None
             data = {"imdb_id": imdb_id, "type": vtype,
                     "name": name_zh or name_en,
                     "name_zh": name_zh, "name_en": name_en,
-                    "releaseInfo": date[:4], "videos": videos}
+                    "releaseInfo": date[:4], "videos": videos,
+                    "poster_path": poster_path, "backdrop_path": backdrop_path}
         db.save_tmdb_meta(path, imdb_id, vtype, data)
         dur_ms = int((_time.monotonic() - t0) * 1000)
         db.record_api_call(path, kind="tmdb", endpoint=f"fetch_meta.{vtype}",

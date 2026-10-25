@@ -1,5 +1,33 @@
 /* 登录 / 控制面板 / 管理后台三页共用样式（配合 common.css 主题变量）。 */
 
+/* ---- 任务详情页 Hero 横幅 ---- */
+.task-hero {
+  position: relative;
+  height: 180px;
+  margin: -18px -18px 12px;  /* 向外撑开父卡片 padding */
+  background-size: cover;
+  background-position: center;
+  border-top-left-radius: 6px;
+  border-top-right-radius: 6px;
+  overflow: hidden;
+}
+.task-hero[hidden] { display: none; }
+.task-hero-mask {
+  position: absolute; inset: 0;
+  background: linear-gradient(
+    to bottom,
+    rgba(0, 0, 0, .20) 0%,
+    rgba(0, 0, 0, .65) 100%);
+}
+.task-hero-title {
+  position: absolute;
+  left: 18px; right: 18px; bottom: 14px;
+  color: #fff;
+  font-size: 1.45rem;
+  font-weight: 700;
+  text-shadow: 0 2px 8px rgba(0,0,0,.7);
+}
+
 /* hidden 属性最高优先（badge/button 等 author display 会覆盖 UA 的 [hidden]） */
 [hidden] { display: none !important; }
 

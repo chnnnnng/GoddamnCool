@@ -13,7 +13,7 @@
   var QUOTA_LABEL = {
     search:   { label: '搜索', desc: '网盘资源搜索' },
     transfer: { label: '转存', desc: '保存到我的网盘' },
-    play:     { label: '播放', desc: '在线播放' },
+    play:     { label: '播放', desc: 'Stremio 在线播放' },
   };
 
   function _quotaCard(qk, q) {

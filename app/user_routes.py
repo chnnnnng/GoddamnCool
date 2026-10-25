@@ -145,4 +145,23 @@ async def my_tasks(request: Request):
     tasks = db.list_tasks_by_user(config.DB_PATH, user["id"])
     for t in tasks:
         t["status_text"] = _STATUS_TEXT.get(t["status"], t["status"])
+        # 附加 TMDB 封面（只读已缓存的元数据，不额外打 API）
+        backdrop, poster = None, None
+        try:
+            imdb_id = t.get("imdb_id")
+            vtype = t.get("video_type")
+            if imdb_id and vtype:
+                cached = db.get_tmdb_meta(config.DB_PATH, imdb_id, vtype,
+                                          ttl=config.TMDB_META_TTL)
+                if cached:
+                    bp = cached.get("backdrop_path")
+                    pp = cached.get("poster_path")
+                    if bp:
+                        backdrop = f"https://image.tmdb.org/t/p/w1280{bp}"
+                    if pp:
+                        poster = f"https://image.tmdb.org/t/p/w500{pp}"
+        except Exception:
+            pass
+        t["backdrop"] = backdrop
+        t["poster"] = poster
     return {"tasks": tasks}

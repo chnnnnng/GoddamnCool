@@ -8,6 +8,50 @@
   --warn: #fbbf24;
 }
 
+/* ---- Hero 横幅（TMDB backdrop） ---- */
+.hero {
+  position: relative;
+  height: 220px;
+  margin: 10px 0 18px;
+  border-radius: 4px;
+  overflow: hidden;
+  background-size: cover;
+  background-position: center;
+  box-shadow: 0 2px 14px rgba(0, 0, 0, .3);
+}
+.hero[hidden] { display: none; }
+.hero-mask {
+  position: absolute; inset: 0;
+  background: linear-gradient(
+    to bottom,
+    rgba(0, 0, 0, .10) 0%,
+    rgba(0, 0, 0, .35) 35%,
+    rgba(0, 0, 0, .80) 100%);
+}
+.hero-inner {
+  position: relative; z-index: 1;
+  height: 100%;
+  display: flex; flex-direction: column; justify-content: flex-end;
+  padding: 18px 24px;
+  color: #fff;
+}
+.hero-inner h1 {
+  margin: 0 0 4px;
+  font-size: 1.9rem;
+  font-weight: 700;
+  text-shadow: 0 2px 8px rgba(0,0,0,.6);
+}
+.hero-inner .meta {
+  color: rgba(255, 255, 255, .78);
+  margin: 0;
+  text-shadow: 0 1px 4px rgba(0,0,0,.6);
+}
+@media (max-width: 600px) {
+  .hero { height: 160px; margin: 6px 0 14px; }
+  .hero-inner { padding: 12px 16px; }
+  .hero-inner h1 { font-size: 1.4rem; }
+}
+
 /* ---- 搜索框 ---- */
 /* 顶部导航与卡片间距对齐其他页面（panel/task 的 main>.card margin 18px） */
 .searchbar {

@@ -182,6 +182,7 @@ async function dosearch() {
     aiApplied = false;
     for (const c of lastCands) delete c.ai;
     llmEnabled = !!data.llm_enabled;
+    renderHero();
     renderResults();
     verifyTimer = setTimeout(verifyLinks, 500);
     if (llmEnabled && lastCands.length) {
@@ -198,6 +199,7 @@ async function dosearch() {
   } catch (e) {
     showMsg('搜索失败：' + (e.message || e), false);
     metaEl.textContent = '';
+    document.getElementById('hero').hidden = true;
   } finally {
     hideLoading();
     btnEl.disabled = false;
@@ -307,6 +309,20 @@ function metaText() {
   let t = `${head} · ${lastCands.length} 候选`;
   if (lastErrors) t += ` · 部分来源异常：${lastErrors}`;
   return t;
+}
+
+/* ---- Hero 横幅（TMDB backdrop） ---- */
+function renderHero() {
+  const hero = document.getElementById('hero');
+  if (!lastMeta || !lastMeta.backdrop) { hero.hidden = true; return; }
+  hero.style.backgroundImage = 'url(' + lastMeta.backdrop + ')';
+  hero.hidden = false;
+  document.getElementById('hero-title').textContent =
+    lastMeta.title || lastKw;
+  const subs = [];
+  if (lastMeta.year) subs.push(String(lastMeta.year));
+  if (lastMeta.type) subs.push(lastMeta.type === 'series' ? '剧集' : '电影');
+  document.getElementById('hero-sub').textContent = subs.join(' · ');
 }
 
 function renderResults() {

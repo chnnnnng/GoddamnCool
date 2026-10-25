@@ -96,6 +96,17 @@ function fileTable(files) {
   return box;
 }
 function render(t) {
+  const hero = document.getElementById('task-hero');
+  if (t.backdrop) {
+    hero.style.backgroundImage = 'url(' + t.backdrop + ')';
+    hero.hidden = false;
+    document.getElementById('task-hero-title').textContent =
+      '《' + t.title + '》'
+      + (t.season != null ? ' 第' + t.season + '季' : '')
+      + (t.episode != null ? ' 第' + t.episode + '集' : '');
+  } else {
+    hero.hidden = true;
+  }
   const body = document.getElementById('body');
   body.textContent = '';
   const st = document.createElement('span');

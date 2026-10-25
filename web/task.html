@@ -15,7 +15,11 @@
   <a class="button sec" href="/search">返回搜索</a>
 </header>
 <main style="max-width:1100px;margin:0 auto;padding:6px 16px 48px">
-<div class="card">
+<div class="card" id="task-card">
+  <div id="task-hero" class="task-hero" hidden>
+    <div class="task-hero-mask"></div>
+    <div class="task-hero-title" id="task-hero-title"></div>
+  </div>
   <h1>转存任务</h1>
   <div id="body">加载中…</div>
   <p id="msg" class="msg" hidden></p>

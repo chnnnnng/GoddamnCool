@@ -217,7 +217,9 @@ async def candidates_search(request: Request, vtype: str = "movie", id: str = ""
         return JSONResponse({"detail": errors or "影片元数据获取失败"}, status_code=404)
     return {
         "meta": ({"id": meta.id, "title": meta.title, "year": meta.year,
-                  "type": meta.type} if meta else None),
+                  "type": meta.type,
+                  "backdrop": meta.backdrop_url(),
+                  "poster": meta.poster_url()} if meta else None),
         "keyword": keyword,
         "llm_enabled": llm.configured(),  # AI 精选入口（管理员配置 LLM 后开启）
         "candidates": [{
@@ -677,6 +679,17 @@ async def task_api(request: Request, task_id: str):
         return JSONResponse({"detail": "任务不存在"}, status_code=404)
     task["status_text"] = _STATUS_TEXT.get(task["status"], task["status"])
     task["save_dir"] = settings.get("TRANSFER_DIR")  # 落盘目录名（任务页展示用）
+    # TMDB 封面（只读缓存，不额外打 API）
+    try:
+        cached = db.get_tmdb_meta(config.DB_PATH, task.get("imdb_id", ""),
+                                  task.get("video_type", ""),
+                                  ttl=config.TMDB_META_TTL) or {}
+        bp, pp = cached.get("backdrop_path"), cached.get("poster_path")
+        task["backdrop"] = f"https://image.tmdb.org/t/p/w1280{bp}" if bp else None
+        task["poster"] = f"https://image.tmdb.org/t/p/w500{pp}" if pp else None
+    except Exception:
+        task["backdrop"] = None
+        task["poster"] = None
     if task["status"] == "COMPLETED":
         task["files"] = _task_files(task)  # 落盘文件明细（含规格与命名提示）
         try:  # 智能重命名摘要（需求第 8 条：任务页展示 + 记录文件名）
