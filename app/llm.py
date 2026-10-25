@@ -115,109 +115,135 @@ def _int_or_none(v):
     return int(v)
 
 
-# ---- 文件名合并：按共同后缀跨目录压缩为模板 ----
+# ---- 文件名合并：token 化 + 最长公共后缀 token 序列 ----
 
-def _longest_common_suffix(strings: list[str]) -> str:
-    """一组字符串的最长公共后缀。"""
-    if not strings:
-        return ""
-    ref = strings[0]
+_TOKEN_SPLIT_RE = re.compile(r"([/.\-_ ]+)")
+_NUMRANGE_RE = re.compile(r"^(.+?)(\d{1,4})(\D*)$")
+_MIN_SUFFIX_TOKENS = 3  # 至少多少个共同 token 才值得合并
+_SEP_TOKENS = set("/._- ")
+
+
+def _tokenize(path: str) -> list[str]:
+    """path → token 序列。
+
+    "S01/S01E01.中英字幕.BDrip.1080p-人人影视.mp4"
+    → ["S01", "/", "S01E01", ".", "中英字幕", ".", "BDrip", ".", "1080p", "-", "人人影视", ".", "mp4"]
+    """
+    tokens: list[str] = []
+    for part in _TOKEN_SPLIT_RE.split(path):
+        if not part:
+            continue
+        if re.fullmatch(r"[/.\-_ ]+", part):
+            for c in part:
+                tokens.append(c)
+        else:
+            tokens.append(part)
+    return tokens
+
+
+def _common_token_suffix(tokenized: list[list[str]]) -> list[str]:
+    """一组 token 序列的最长公共**后缀** token 序列。"""
+    if not tokenized or any(not ts for ts in tokenized):
+        return []
+    ref = tokenized[0]
     max_len = len(ref)
-    for s in strings[1:]:
-        while max_len > 0 and not s.endswith(ref[-max_len:]):
+    for ts in tokenized[1:]:
+        while max_len > 0 and ref[-max_len:] != ts[-max_len:]:
             max_len -= 1
         if max_len == 0:
-            return ""
+            return []
     return ref[-max_len:]
 
 
-def _split_path(path: str) -> tuple[str, str, str]:
-    """拆 path → (dirname, stem, ext_with_dot)。"""
-    dirname = path.rsplit("/", 1)[0] if "/" in path else ""
-    basename = os.path.basename(path)
-    m = re.match(r"^(.+)(\.[^.]+)$", basename)
-    if m:
-        stem, ext = m.groups()
-    else:
-        stem, ext = basename, ""
-    return dirname, stem, ext
+def _extract_variants(paths: list[str]) -> tuple[list[str], str]:
+    """抽 (变化部分列表, 共同后缀字符串)；失败返回 (paths, "")。"""
+    if len(paths) < 2:
+        return paths, ""
+    tokenized = [_tokenize(p) for p in paths]
+    cs = _common_token_suffix(tokenized)
+    if not cs:
+        return paths, ""
+    # 从 cs 尾部向前剥离纯分隔符
+    meaningful = len(cs)
+    for i in range(len(cs) - 1, -1, -1):
+        if cs[i] in _SEP_TOKENS:
+            meaningful = i
+        else:
+            break
+    cs = cs[:meaningful]
+    if len(cs) < _MIN_SUFFIX_TOKENS:
+        return paths, ""
+    suffix_str = "".join(cs)
+    variants = []
+    for ts in tokenized:
+        if ts[-len(cs):] == cs:
+            variants.append("".join(ts[: -len(cs)]))
+        else:
+            variants.append("".join(ts))
+    if len(set(variants)) == 1:
+        return paths, ""
+    return variants, suffix_str
 
 
 def compact_file_paths(paths: list[str]) -> tuple[list[str], list[list[int]]]:
-    """把文件路径压缩为「{{变化部分}} + 共同后缀」。
+    """把一组路径压缩为「{{变化部分}} + 共同后缀」。
 
-    按扩展名分桶 → 桶内按 stem 的最长公共后缀递归聚类（不同簇独立压缩）→
-    簇内 >=2 条才合并，独立路径原样保留。"""
+    按 token 序列的最长公共后缀合并；贪心分桶处理多簇。
+    """
     if not paths:
         return [], []
-
-    splits = [_split_path(p) for p in paths]
-
-    # 按扩展名分桶
-    by_ext: dict[str, list[int]] = {}
-    for i, (_d, _s, ext) in enumerate(splits):
-        by_ext.setdefault(ext, []).append(i)
 
     compact: list[str] = []
     mapping: list[list[int]] = []
 
-    def _cluster(idxs: list[int]) -> None:
-        """贪心聚类：按 stem 最长公共后缀拆成可压缩簇。"""
+    def _can_merge(idxs: list[int]) -> bool:
+        """只判断一组 idxs 能否合并（不产生输出）。"""
+        if len(idxs) < 2:
+            return False
+        sub = [paths[i] for i in idxs]
+        variants, suffix = _extract_variants(sub)
+        return bool(suffix) and len(variants) == len(idxs)
+
+    def _do_merge(idxs: list[int]) -> None:
+        """真正执行合并，追加到 compact/mapping。"""
+        sub = [paths[i] for i in idxs]
+        variants, suffix = _extract_variants(sub)
+        if suffix and len(variants) == len(idxs):
+            merged = "{{" + ", ".join(variants) + "}}" + suffix
+            compact.append(merged)
+            mapping.append(idxs)
+        else:
+            for i in idxs:
+                compact.append(paths[i])
+                mapping.append([i])
+
+    def _process(idxs: list[int]) -> None:
         if len(idxs) < 2:
             for i in idxs:
                 compact.append(paths[i])
                 mapping.append([i])
             return
-        # 贪心：取第一个 stem 做锚，找所有和它有 >=5 长共同后缀的
-        anchor = splits[idxs[0]][1]
-        cluster = [idxs[0]]
-        rest: list[int] = []
-        for i in idxs[1:]:
-            s = splits[i][1]
-            lcs_pair = _longest_common_suffix([anchor, s])
-            if len(lcs_pair) >= 5:
-                cluster.append(i)
-            else:
-                rest.append(i)
-        # 先处理 cluster（簇内再确认整体 LCS 够长）
-        if len(cluster) >= 2:
-            stems_c = [splits[i][1] for i in cluster]
-            lcs = _longest_common_suffix(stems_c)
-            if lcs and not lcs.startswith("."):
-                for sep in (".", "_", "-"):
-                    idx = lcs.find(sep)
-                    if 0 < idx < len(lcs) - 1:
-                        suffix = lcs[idx + 1:]
-                        if suffix and all(s.endswith(sep + suffix) for s in stems_c):
-                            lcs = sep + suffix
-                            break
-            if len(lcs) >= 5:
-                variants = []
-                for i in cluster:
-                    d, s, _e = splits[i]
-                    var_stem = s[: -len(lcs)]
-                    if d:
-                        variants.append(f"{d}/{var_stem}" if var_stem else d)
-                    else:
-                        variants.append(var_stem)
-                merged = "{{" + ", ".join(variants) + "}}" + lcs + splits[cluster[0]][2]
-                compact.append(merged)
-                mapping.append(cluster)
-            else:
-                # 簇内 LCS 仍不够长 → 逐条
-                for i in cluster:
-                    compact.append(paths[i])
-                    mapping.append([i])
-        else:
-            compact.append(paths[cluster[0]])
-            mapping.append(cluster)
-        # 递归处理 rest
-        if rest:
-            _cluster(rest)
+        # 先尝试整体合并
+        if _can_merge(idxs):
+            _do_merge(idxs)
+            return
+        # 贪心分桶：从左到右，每个 bucket 尽量吸收能合并的成员
+        remaining = list(idxs)
+        while remaining:
+            anchor = remaining.pop(0)
+            bucket = [anchor]
+            absorbed = True
+            while absorbed and remaining:
+                absorbed = False
+                for i in remaining[:]:
+                    if _can_merge(bucket + [i]):
+                        bucket.append(i)
+                        remaining.remove(i)
+                        absorbed = True
+                        break
+            _do_merge(bucket)
 
-    for ext, idxs in by_ext.items():
-        _cluster(idxs)
-
+    _process(list(range(len(paths))))
     return compact, mapping
 
 

@@ -76,14 +76,31 @@ class AISearchChain(BaseSearchChain):
                      ".m2ts", ".mpg", ".mpeg", ".m4v", ".iso"}
         compact_per_cand: list[tuple[list[str], list[list[int]], list[dict]]] = []
         send_cands: list[dict] = []
-        for c in cands:
+        alive_indices: list[int] = []  # 存活候选在 send_cands 里的下标
+        for ci, c in enumerate(cands):
             d = getattr(c, "detail", None) or {}
             files = d.get("files") or []
             vf = [f for f in files
                   if os.path.splitext((f.get("path") or f.get("name") or ""))[1].lower() in VIDEO_EXT]
             paths = [f.get("path") or f.get("name") or "" for f in vf]
             compact, mapping = llm.compact_file_paths(paths)
-            compact_per_cand.append((compact, mapping, vf))
+
+            # ---- 过滤：只给 AI 存活候选（或 season 未指定时的单季候选）----
+            alive = getattr(c, "alive_state", None) == "ok"
+            single_season = False
+            if season is None:
+                seasons_list = d.get("seasons") or []
+                # 单季：seasons 聚合列表只有 1 个条目，或 files 里 season 唯一值只有 1 个且 >= 2 集
+                if len(seasons_list) == 1:
+                    single_season = True
+                elif len(seasons_list) == 0 and len(vf) >= 3:
+                    uniq_s = {f.get("season") for f in vf if f.get("season") is not None}
+                    if len(uniq_s) == 1:
+                        single_season = True
+            if not alive and not single_season:
+                compact_per_cand.append((compact, mapping, vf))
+                continue
+
             send_cands.append({
                 "title": getattr(c, "title", None),
                 "source": getattr(c, "source", None),
@@ -93,6 +110,9 @@ class AISearchChain(BaseSearchChain):
                 "total_size_h": d.get("total_size_h"),
                 "files": [{"path": p} for p in compact],
             })
+            alive_indices.append(ci)
+            compact_per_cand.append((compact, mapping, vf))
+
         if not any(sp["files"] for sp in send_cands):
             return
         try:
@@ -101,18 +121,17 @@ class AISearchChain(BaseSearchChain):
         except llm.LLMError as e:
             print(f"[AISearchChain] AI enrich 失败: {e}")
             return
-        by = {it["index"]: it for it in items}
-        for ci, (compact, mapping, vf) in enumerate(compact_per_cand):
-            it = by.get(ci)
-            if not it:
-                continue
-            # ai 标记挂在 detail dict 上（SearchCandidate 无 __setitem__）
+        # items 下标 ↔ send_cands 下标 ↔ alive_indices → 原 cands 下标
+        for send_idx, it in enumerate(items):
+            ci = alive_indices[send_idx]
+            # ai 标记挂在 detail dict 上
             detail = getattr(cands[ci], "detail", None) or {}
             detail["ai"] = it
             setattr(cands[ci], "detail", detail)
             # keep=false 的候选不解析文件名（省 token，后续走规则 canonical）
             if it.get("keep") is False:
                 continue
+            compact, mapping, vf = compact_per_cand[ci]
             files_by = {pf["ci"]: pf for pf in (it.get("files") or [])}
             for compact_i, orig_indices in enumerate(mapping):
                 pf = files_by.get(compact_i)
