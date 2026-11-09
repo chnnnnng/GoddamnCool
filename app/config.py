@@ -68,6 +68,10 @@ META_PROVIDER: str = os.environ.get("META_PROVIDER", "tmdb")
 # 外部资源检索（阶段 3）：PanSou 聚合搜索实例（github.com/fish2018/pansou，MIT）。
 # 默认公开实例，可替换为自部署地址；搜索为 JSON 文本级流量，几乎无带宽开销。
 PANSOU_BASE_URL: str = os.environ.get("PANSOU_BASE_URL", "https://so.252035.xyz").rstrip("/")
+# 有鉴权实例（AUTH_ENABLED=true）的登录凭据；留空视为公开实例，不携带 token。
+# 管理员可在 /admin 页面在线修改（密码回显打码）。
+PANSOU_USERNAME: str = os.environ.get("PANSOU_USERNAME", "")
+PANSOU_PASSWORD: str = os.environ.get("PANSOU_PASSWORD", "")
 SEARCH_TIMEOUT: float = float(os.environ.get("SEARCH_TIMEOUT", "25"))
 SEARCH_LIMIT: int = int(os.environ.get("SEARCH_LIMIT", "30"))
 # Lite 用户每日搜索次数上限（Pro/管理员不限；管理员可在 /admin 页面在线修改）

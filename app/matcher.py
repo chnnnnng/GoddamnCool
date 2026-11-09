@@ -219,9 +219,9 @@ class MovieMatcher:
             if sim < 0.5:
                 continue
 
-            # 年份硬否决：双方年份已知且差>=1 视为不同作品（需求：不同年份不错误匹配）
-            if p.year and meta.year and abs(p.year - meta.year) >= 1:
-                continue
+            # # 年份硬否决：双方年份已知且差>=1 视为不同作品（需求：不同年份不错误匹配）
+            # if p.year and meta.year and abs(p.year - meta.year) >= 1:
+            #     continue
 
             reason_parts = [f"标题相似度 {sim:.2f}"]
             score = sim * 0.7

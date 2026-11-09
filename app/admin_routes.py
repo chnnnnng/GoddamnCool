@@ -125,6 +125,8 @@ async def get_config(request: Request):
         value = settings.get(key)
         if key == "LLM_API_KEY":  # API Key 回显打码，不回传明文
             value = llm.masked_key(value)
+        elif key == "PANSOU_PASSWORD" and value:  # 密码回显打码，不暴露任何字符
+            value = "••••"
         items.append({"key": key, "value": value,
                       "meta": settings.SETTINGS_META.get(key, "")})
     return {"config": items}
@@ -141,9 +143,10 @@ async def set_config(request: Request):
         return JSONResponse({"detail": "请求体必须是 JSON"}, status_code=400)
     if not isinstance(body, dict):
         return JSONResponse({"detail": "请求体必须是 JSON 对象"}, status_code=400)
-    # 打码占位值（管理页原样提交）视为"未修改"，避免用掩码覆盖真实 Key
+    # 打码占位值（管理页原样提交）视为"未修改"，避免用掩码覆盖真实 Key/密码
     body = {k: v for k, v in body.items()
-            if not (k == "LLM_API_KEY" and llm.is_masked(str(v)))}
+            if not ((k == "LLM_API_KEY" or k == "PANSOU_PASSWORD")
+                    and llm.is_masked(str(v)))}
     try:
         config_data = settings.set(config.DB_PATH, body)
     except ValueError as e:

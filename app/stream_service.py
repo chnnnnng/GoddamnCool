@@ -113,37 +113,6 @@ class StreamService:
         imdb_id, _, _ = parse_video_id(video_id)
         uid = user_id or ""
 
-        # —— 路径 1：file_index 快路径（O(1)，完全绕开标盘搜索）——
-        idx = db.get_file_index(self.db_path, user_id=uid,
-                                imdb_id=imdb_id, vtype=vtype,
-                                season=season, episode=episode)
-        if idx and idx.get("fid"):
-            try:
-                resource = await provider.get_play_resource(
-                    CloudFile(fid=idx["fid"], name=idx.get("filename", ""),
-                              size=0, is_dir=False))
-                reason = "file_index 快路径命中"
-                return [self._to_stream(resource, reason)], reason
-            except ProviderError as e:
-                log.warning("file_index 命中但 fid 取直链失败（可能 Cookie 变更）: %s", e)
-
-        # —— 路径 2：transfer_task 直接 fid（完全不搜盘）——
-        task_file = self._resolve_fid_from_tasks(vtype, imdb_id, season,
-                                                 episode, uid)
-        if task_file is not None:
-            try:
-                resource = await provider.get_play_resource(task_file)
-            except ProviderError as e:
-                log.warning("transfer_task 直接路径 fid 取直链失败（可能文件已删）: %s，回退搜索匹配", e)
-            else:
-                db.upsert_file_index(self.db_path, user_id=uid,
-                                     imdb_id=imdb_id, vtype=vtype,
-                                     season=season, episode=episode,
-                                     fid=task_file.fid, filename=task_file.name,
-                                     source="task")
-                reason = "转存任务已定位该文件"
-                return [self._to_stream(resource, reason)], reason
-
         # —— 路径 3：网盘搜索 + 标题匹配（原有逻辑）——
         files = await self._search_all(provider, meta, video_id, user_id)
         if not files:
@@ -304,6 +273,7 @@ class StreamService:
         spec_line = _spec_emoji_line(info)
         desc = f"{reason}\n{spec_line}\n{resource.filename}" if spec_line \
             else f"{reason}\n{resource.filename}"
+        print(f"url: {resource.url}, name: {resource.filename}")
         return {
             "url": resource.url,
             "name": f"{resource.source_name}\n{quality}".rstrip(),

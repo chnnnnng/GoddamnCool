@@ -18,6 +18,7 @@
 import asyncio
 import logging
 import re
+import time
 
 import httpx
 
@@ -32,13 +33,34 @@ LOOSE_URL_RE = re.compile(r"^https?://\S+$")
 
 _ZERO_TIME = "0001-01-01T00:00:00Z"
 
+# 有鉴权实例（AUTH_ENABLED=true）的登录凭据由管理员在 /admin 配置；
+# 用户名留空则视为公开实例，不携带 token（向后兼容 so.252035.xyz 等）。
+# token 仅存内存（不写 DB），进程内按 (base_url, username) 共享，过期或
+# 接口返回 401 时自动重新登录。
+_TOKEN_CACHE: dict[tuple[str, str], tuple[str, float]] = {}
+# 提前 N 秒视为过期，避免边界请求恰好撞到期
+_TOKEN_EXPIRY_SKEW = 60.0
+
+
+def _clear_token_cache(base_url: str = "", username: str = "") -> None:
+    """供测试/登出调用：按 base_url+username 清除，或全部清空。"""
+    if base_url and username:
+        _TOKEN_CACHE.pop((base_url, username), None)
+    elif not base_url and not username:
+        _TOKEN_CACHE.clear()
+
 
 class PanSouProvider(ResourceSearchProvider):
     name = "PanSou"
 
-    def __init__(self, base_url: str, timeout: float = 20.0, retry_backoff: float = 1.0):
+    def __init__(self, base_url: str, timeout: float = 20.0, retry_backoff: float = 1.0,
+                 username: str = "", password: str = ""):
         self._base = base_url.rstrip("/")
         self._backoff = retry_backoff
+        self._username = (username or "").strip()
+        self._password = password or ""
+        # 仅当配置了用户名时启用鉴权（公开实例无需登录）
+        self._auth_enabled = bool(self._username)
         origin = self._base
         self._client = httpx.AsyncClient(
             timeout=httpx.Timeout(timeout, connect=10),
@@ -56,6 +78,95 @@ class PanSouProvider(ResourceSearchProvider):
             },
         )
 
+    # ---------- 鉴权（有鉴权实例） ----------
+
+    def _cache_key(self) -> tuple[str, str]:
+        return (self._base, self._username)
+
+    def _get_cached_token(self) -> str | None:
+        """返回未过期的缓存 token；未启用鉴权或已过期返回 None。"""
+        if not self._auth_enabled:
+            return None
+        entry = _TOKEN_CACHE.get(self._cache_key())
+        if not entry:
+            return None
+        token, expires_at = entry
+        if expires_at - _TOKEN_EXPIRY_SKEW <= time.time():
+            _TOKEN_CACHE.pop(self._cache_key(), None)
+            return None
+        return token
+
+    async def _login(self) -> str:
+        """调用 /api/auth/login 获取并缓存 token，失败抛 SearchError。"""
+        body = {"username": self._username, "password": self._password}
+        try:
+            resp = await self._client.post(f"{self._base}/api/auth/login", json=body)
+        except httpx.HTTPError as e:
+            raise SearchError(f"PanSou 登录请求失败: {e}") from e
+        if resp.status_code != 200:
+            raise SearchError(f"PanSou 登录失败 HTTP {resp.status_code}")
+        try:
+            data = resp.json()
+        except ValueError as e:
+            raise SearchError(f"PanSou 登录响应非 JSON: {e}") from e
+        token = (data.get("token") or "").strip()
+        if not token:
+            raise SearchError(f"PanSou 登录响应缺少 token: {data}")
+        expires_at = float(data.get("expires_at") or (time.time() + 86400))
+        _TOKEN_CACHE[self._cache_key()] = (token, expires_at)
+        log.info("PanSou 登录成功（%s），token 有效期至 %s",
+                 self._username, time.strftime("%Y-%m-%d %H:%M:%S",
+                                               time.localtime(expires_at)))
+        return token
+
+    async def _ensure_token(self, force: bool = False) -> str | None:
+        """获取可用 token：优先缓存；force=True 或无缓存/过期则重新登录。"""
+        if not self._auth_enabled:
+            return None
+        if force:
+            _TOKEN_CACHE.pop(self._cache_key(), None)
+        token = self._get_cached_token()
+        if token:
+            return token
+        return await self._login()
+
+    def _auth_headers(self, token: str | None) -> dict:
+        return {"Authorization": f"Bearer {token}"} if token else {}
+
+    async def verify(self) -> bool:
+        """调用 /api/auth/verify 校验当前 token 是否有效（无 token 返回 False）。"""
+        token = self._get_cached_token()
+        if not token:
+            return False
+        try:
+            resp = await self._client.post(
+                f"{self._base}/api/auth/verify",
+                headers=self._auth_headers(token))
+        except httpx.HTTPError as e:
+            log.warning("PanSou verify 请求失败: %s", e)
+            return False
+        if resp.status_code != 200:
+            return False
+        try:
+            return bool(resp.json().get("valid"))
+        except ValueError:
+            return False
+
+    async def logout(self) -> None:
+        """调用 /api/auth/logout 注销并清除缓存 token（无 token 则跳过）。"""
+        token = self._get_cached_token()
+        if not token:
+            _TOKEN_CACHE.pop(self._cache_key(), None)
+            return
+        try:
+            await self._client.post(
+                f"{self._base}/api/auth/logout",
+                headers=self._auth_headers(token))
+        except httpx.HTTPError as e:
+            log.warning("PanSou logout 请求失败: %s", e)
+        finally:
+            _TOKEN_CACHE.pop(self._cache_key(), None)
+
     async def search(self, keyword: str, limit: int = 20,
                      cloud_types: list[str] | None = None) -> list[SearchCandidate]:
         body = {"kw": keyword, "res": "merge"}
@@ -64,15 +175,34 @@ class PanSouProvider(ResourceSearchProvider):
         if cloud_types:
             body["cloud_types"] = cloud_types
         last_err = ""
+        relogged = False  # 本轮是否已因 401 重登过（避免无限重登）
         for attempt in range(3):
             if attempt:
                 await asyncio.sleep(self._backoff * attempt)
             try:
-                resp = await self._client.post(f"{self._base}/api/search", json=body)
+                token = await self._ensure_token()
+            except SearchError as e:
+                last_err = str(e)
+                log.warning("PanSou 获取 token 失败: %s", e)
+                continue
+            try:
+                resp = await self._client.post(
+                    f"{self._base}/api/search", json=body,
+                    headers=self._auth_headers(token))
             except httpx.HTTPError as e:
                 last_err = f"PanSou 请求失败: {e}"
                 log.warning("PanSou 第 %d 次请求失败: %s", attempt + 1, e)
                 continue  # 实例瞬时 400/502/超时，重试
+            if resp.status_code == 401 and not relogged:
+                # token 失效/被注销：清除缓存并重登一次后重试
+                log.info("PanSou 搜索返回 401，重新登录后重试")
+                relogged = True
+                try:
+                    await self._ensure_token(force=True)
+                except SearchError as e:
+                    last_err = str(e)
+                    continue
+                continue
             if resp.status_code != 200:
                 last_err = f"PanSou HTTP {resp.status_code}"
                 log.warning("PanSou 第 %d 次请求 HTTP %d", attempt + 1, resp.status_code)
@@ -113,15 +243,32 @@ class PanSouProvider(ResourceSearchProvider):
         （cache_hit/expires_at），调用方无需再做本地缓存；整体失败抛 SearchError。
         """
         last_err = ""
+        relogged = False
         for attempt in range(3):
             if attempt:
                 await asyncio.sleep(self._backoff * attempt)
             try:
+                token = await self._ensure_token()
+            except SearchError as e:
+                last_err = str(e)
+                log.warning("PanSou 检测获取 token 失败: %s", e)
+                continue
+            try:
                 resp = await self._client.post(
-                    f"{self._base}/api/check/links", json={"items": items})
+                    f"{self._base}/api/check/links", json={"items": items},
+                    headers=self._auth_headers(token))
             except httpx.HTTPError as e:
                 last_err = f"PanSou 检测请求失败: {e}"
                 log.warning("PanSou 检测第 %d 次请求失败: %s", attempt + 1, e)
+                continue
+            if resp.status_code == 401 and not relogged:
+                log.info("PanSou 检测返回 401，重新登录后重试")
+                relogged = True
+                try:
+                    await self._ensure_token(force=True)
+                except SearchError as e:
+                    last_err = str(e)
+                    continue
                 continue
             if resp.status_code != 200:
                 last_err = f"PanSou 检测 HTTP {resp.status_code}"

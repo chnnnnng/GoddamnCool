@@ -23,11 +23,7 @@ log = logging.getLogger(__name__)
 BASE = "https://drive-pc.quark.cn/1/clouddrive"
 COMMON_PARAMS = {"pr": "ucpro", "fr": "pc"}
 REFERER = "https://pan.quark.cn/"
-USER_AGENT = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) quark-cloud-drive/3.14.2 Chrome/112.0.5615.165 "
-    "Electron/24.1.3.8 Safari/537.36 Channel/pckk_other_ch"
-)
+USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) quark-cloud-drive/2.5.20 Chrome/100.0.4896.160 Electron/18.3.5.4-b478491100 Safari/537.36 Channel/pckk_other_ch"
 AUTH_CODES = {31001, 31002, 31003}  # 登录态相关错误码（实测 31001=token 无效）
 
 # /file/v2/play 转码档位排序（原画条目 trans_status=raw，恒为第一优先）
@@ -114,7 +110,7 @@ class QuarkDriveProvider(CloudDriveProvider):
 
     async def search_files(self, keyword: str, limit: int = 50) -> list[CloudFile]:
         data = await self._request("GET", "/file/search", params={
-            "query": keyword, "_page": "1", "_size": str(min(limit, 100))})
+            "q": keyword, "_page": "1", "_size": str(min(limit, 100))})
         files = []
         for f in data.get("list", [])[:limit]:
             if f.get("dir"):

@@ -113,8 +113,11 @@ class SearchService:
     def _providers(self) -> list[ResourceSearchProvider]:
         providers: list[ResourceSearchProvider] = []
         if settings.get("PANSOU_BASE_URL"):
-            providers.append(PanSouProvider(settings.get("PANSOU_BASE_URL"),
-                                            timeout=config.SEARCH_TIMEOUT))
+            providers.append(PanSouProvider(
+                settings.get("PANSOU_BASE_URL"),
+                timeout=config.SEARCH_TIMEOUT,
+                username=settings.get("PANSOU_USERNAME"),
+                password=settings.get("PANSOU_PASSWORD")))
         return providers
 
     async def search(self, vtype: str, video_id: str, keyword: str = "",
@@ -283,8 +286,11 @@ class SearchService:
         """
         if not items:
             return []
-        provider = PanSouProvider(settings.get("PANSOU_BASE_URL"),
-                                  timeout=config.SEARCH_TIMEOUT)
+        provider = PanSouProvider(
+            settings.get("PANSOU_BASE_URL"),
+            timeout=config.SEARCH_TIMEOUT,
+            username=settings.get("PANSOU_USERNAME"),
+            password=settings.get("PANSOU_PASSWORD"))
         payload = []
         for it in items:
             entry = {"disk_type": "quark", "url": it["share_url"]}
