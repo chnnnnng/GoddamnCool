@@ -911,11 +911,16 @@ def incr_search_count(db_path: str, user_id: str) -> int:
     """当日搜索次数 +1，返回累计值。"""
     day = time.strftime("%Y-%m-%d")
     with _lock, _conn(db_path) as c:
-        row = c.execute(
+        # RETURNING 需要 SQLite 3.35+，降级到 3.34 兼容：先 upsert 再 SELECT。
+        # 全局 _lock 保证两步之间无并发写入。
+        c.execute(
             """INSERT INTO daily_usage (user_id, day, search_count) VALUES (?, ?, 1)
                ON CONFLICT(user_id, day) DO UPDATE SET
-                   search_count = search_count + 1
-               RETURNING search_count""",
+                   search_count = search_count + 1""",
+            (user_id, day),
+        )
+        row = c.execute(
+            "SELECT search_count FROM daily_usage WHERE user_id = ? AND day = ?",
             (user_id, day),
         ).fetchone()
     return row["search_count"]
@@ -943,12 +948,16 @@ def incr_transfer_count(db_path: str, user_id: str) -> int:
     """当日转存次数 +1（任务真正新建时计，幂等复用不计），返回累计值。"""
     day = time.strftime("%Y-%m-%d")
     with _lock, _conn(db_path) as c:
-        row = c.execute(
+        # RETURNING 需要 SQLite 3.35+，降级到 3.34 兼容：先 upsert 再 SELECT。
+        c.execute(
             """INSERT INTO daily_usage (user_id, day, transfer_count)
                VALUES (?, ?, 1)
                ON CONFLICT(user_id, day) DO UPDATE SET
-                   transfer_count = transfer_count + 1
-               RETURNING transfer_count""",
+                   transfer_count = transfer_count + 1""",
+            (user_id, day),
+        )
+        row = c.execute(
+            "SELECT transfer_count FROM daily_usage WHERE user_id = ? AND day = ?",
             (user_id, day),
         ).fetchone()
     return row["transfer_count"]
@@ -976,11 +985,15 @@ def incr_play_count(db_path: str, user_id: str) -> int:
     """当日播放次数 +1（Stremio 请求命中可用流时计），返回累计值。"""
     day = time.strftime("%Y-%m-%d")
     with _lock, _conn(db_path) as c:
-        row = c.execute(
+        # RETURNING 需要 SQLite 3.35+，降级到 3.34 兼容：先 upsert 再 SELECT。
+        c.execute(
             """INSERT INTO daily_usage (user_id, day, play_count) VALUES (?, ?, 1)
                ON CONFLICT(user_id, day) DO UPDATE SET
-                   play_count = play_count + 1
-               RETURNING play_count""",
+                   play_count = play_count + 1""",
+            (user_id, day),
+        )
+        row = c.execute(
+            "SELECT play_count FROM daily_usage WHERE user_id = ? AND day = ?",
             (user_id, day),
         ).fetchone()
     return row["play_count"]
